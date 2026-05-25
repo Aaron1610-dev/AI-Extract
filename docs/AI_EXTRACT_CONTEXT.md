@@ -546,6 +546,17 @@ Adapter dùng Kaggle CLI/API flow tương tự project cũ:
 - `kaggle kernels output` để tải output.
 - Validate `request_id` trong `current_run_status_{request_id}.json` và `cutline_result.json` để tránh stale output.
 
+Kernel one-chunk dùng lại logic matching cũ đã debug kỹ trong `FastAPI-Khoa-Luan/gemini_pipeline/sgk_extract/chunk_postprocess.py`:
+
+- `_score(m, has_heading, has_dot)` với integer score.
+- `prefix_match_count(...)` và `robust_match_count(...)`.
+- `try_merge_title_from_next_lines(...)` khi title OCR bị xuống dòng.
+- các `best_mode`: `prefix_line`, `heading_left_title`, `same_line`, `merge_next`.
+- `weak_cut`, `force_cut`, `ALLOW_WEAK_CUT`, `FORCE_CUT_ON_MODES`.
+- `early_stop=true` khi matched đủ expected title letters.
+
+`cutline_result.json` ghi thêm debug fields như `matched_prefix`, `prefix_hits`, `lcs`, `cov_obs`, `cov_exp`, `best_mode`, `weak_cut`, `force_cut`, `early_stop`.
+
 Env cần cấu hình:
 
 ```text
@@ -560,13 +571,27 @@ AI_EXTRACT_KAGGLE_TIMEOUT_SECONDS
 
 `AI_EXTRACT_KAGGLE_WORK_DIR`, `AI_EXTRACT_KAGGLE_POLL_SECONDS`, `AI_EXTRACT_KAGGLE_TIMEOUT_SECONDS` là optional. Nếu thiếu config bắt buộc, endpoint trả `503`.
 
+Có thể kiểm tra readiness trước khi gọi endpoint bằng:
+
+```bash
+python3 scripts/check_kaggle_cutline_ready.py
+```
+
+Chi tiết cấu hình và lỗi thường gặp nằm trong:
+
+```text
+docs/KAGGLE_CUTLINE_READINESS.md
+```
+
 Output debug-only:
 
 ```text
-workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}_cutline.json
-workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}_page.png
-workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}_bbox.png
+workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/cutline.json
+workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/page.png
+workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/bbox.png
 ```
+
+Thư mục debug dùng path ổn định theo từng chunk. Nếu chạy lại cùng một chunk, các file trên sẽ được overwrite. `request_id` vẫn nằm trong `cutline.json` để kiểm tra stale output, nhưng không nằm trong tên thư mục.
 
 Response slim:
 
@@ -589,6 +614,104 @@ Response slim:
 ```
 
 Nếu không match, endpoint vẫn ghi debug JSON/ảnh và trả `matched=false` với reason nếu Kaggle output hợp lệ. Đây chỉ là Stage A để quan sát cutline; bước sau mới quyết định có áp dụng `y_cut` để recut PDF hay không.
+
+### Chunk cutline apply cho một chunk
+
+Stage B dùng `y_cut` đã có từ Stage A để tạo PDF recut an toàn cho đúng một selected chunk và previous chunk. Endpoint này không gọi Kaggle, không chạy PaddleOCR và không sửa các PDF chính trong `doc/`.
+
+Endpoint:
+
+```text
+POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline/apply
+```
+
+Input bắt buộc:
+
+```text
+workspace/outputs/{job_id}/lesson/doc/{lesson_name}.pdf
+workspace/outputs/{job_id}/chunk/{lesson_name}/{chunk_name}.json
+workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/cutline.json
+```
+
+Điều kiện:
+
+- selected chunk không được là `chunk_01`.
+- selected chunk phải có `content_head=true`.
+- cutline JSON phải có `matched=true`.
+- `page_number` trong cutline JSON phải bằng `selected_chunk.start`.
+- `y_cut` phải tồn tại.
+- confidence phải đủ an toàn: `force_cut=true`, hoặc `weak_cut=true`, hoặc `matched_prefix >= 3`, hoặc `match_ratio >= 0.5`.
+
+Output mới:
+
+```text
+workspace/outputs/{job_id}/chunk/{lesson_name}/doc_cutline/{previous_chunk}.pdf
+workspace/outputs/{job_id}/chunk/{lesson_name}/doc_cutline/{selected_chunk}.pdf
+workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/cutline_apply.json
+```
+
+Quy tắc recut từ lesson PDF gốc:
+
+- previous chunk PDF gồm full pages `P..S-1` và phần top của page `S` từ `0..y_cut`.
+- selected chunk PDF gồm phần bottom của page `S` từ `y_cut..bottom` và full pages `S+1..E`.
+- `y_cut` từ ảnh OCR được đổi sang tọa độ PDF bằng `pdf_y_cut = y_cut * pdf_page_height / image_height`.
+
+Endpoint này không overwrite:
+
+```text
+workspace/outputs/{job_id}/chunk/{lesson_name}/doc/*.pdf
+```
+
+### Chunk cutline promote vào official doc
+
+Stage C dùng `cutline.json` đã có để recut từ lesson PDF gốc và thay thế PDF chính trong `chunk/{lesson_name}/doc/`. Endpoint này không gọi Kaggle, không chạy PaddleOCR, không sửa chunk JSON và không update job status.
+
+Endpoint:
+
+```text
+POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline/promote
+```
+
+Input bắt buộc:
+
+```text
+workspace/outputs/{job_id}/lesson/doc/{lesson_name}.pdf
+workspace/outputs/{job_id}/chunk/{lesson_name}/{chunk_name}.json
+workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/cutline.json
+```
+
+Backup trước khi overwrite official PDF:
+
+```text
+workspace/outputs/{job_id}/chunk/{lesson_name}/doc_backup_before_cutline/{chunk_name}.pdf
+```
+
+Nếu backup đã tồn tại thì không overwrite backup. Nhờ vậy có thể rerun promote nhiều lần nhưng vẫn giữ bản page-range ban đầu.
+
+Trường hợp `chunk_01` hoặc `first_chunk=true`:
+
+- Không có previous chunk.
+- Official `doc/chunk_01.pdf` được tạo lại từ lesson PDF gốc.
+- Page `S = chunk_01.start` được crop từ `y_cut` tới bottom.
+- Pages `S+1..E` được giữ full pages.
+
+Trường hợp `chunk_02+` với `content_head=true`:
+
+- Previous chunk nhận full pages `P..S-1` và phần top của page `S` từ `0..y_cut`.
+- Selected chunk nhận phần bottom của page `S` từ `y_cut..bottom` và full pages `S+1..E`.
+- Cả `doc/{previous_chunk}.pdf` và `doc/{selected_chunk}.pdf` được replace sau khi backup.
+
+Trường hợp `chunk_02+` nhưng `content_head=false`:
+
+- Endpoint trả `400` vì official page-range doc đã đủ, không cần cutline promote.
+
+Debug promote JSON:
+
+```text
+workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/cutline_promote.json
+```
+
+File này ghi tọa độ chuyển đổi `y_cut_image -> y_cut_pdf`, thông tin confidence, output official PDFs và backup paths.
 
 ## 13. Scripts cleanup note
 
@@ -644,8 +767,15 @@ Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuy
 - Cutline debug được chỉnh để dùng Kaggle/PaddleOCR thay vì yêu cầu PaddleOCR local trong backend.
 - Backend chỉ render trang `chunk.start` thành PNG, tạo `run_request.json`, tự build/push Kaggle dataset/kernel debug-only và đọc output.
 - Loại bỏ `paddleocr` khỏi backend requirements; AI-Extract backend không import/call PaddleOCR local.
-- Thay placeholder `AI_EXTRACT_KAGGLE_CUTLINE_COMMAND` bằng adapter Kaggle thật dựa trên dataset/kernel/status/output flow của project cũ.
+- Thay placeholder external-command cũ bằng adapter Kaggle thật dựa trên dataset/kernel/status/output flow của project cũ.
 - Cutline debug không sửa chunk JSON, không sửa chunk PDF, không update job status và không implement batch cutline processing.
+- Thêm readiness script `scripts/check_kaggle_cutline_ready.py` và tài liệu `docs/KAGGLE_CUTLINE_READINESS.md` để kiểm tra Kaggle config trước khi chạy endpoint.
+- Readiness check không gọi Kaggle và không in secret values.
+- Cập nhật kernel one-chunk để dùng lại old thesis chunk cutline scoring/matching logic từ `chunk_postprocess.py`.
+- `cutline_result.json` giờ có thêm `match_score`, `matched_prefix`, `expected_len`, `match_ratio`, `prefix_hits`, `lcs`, `cov_obs`, `cov_exp`, `best_mode`, `weak_cut`, `force_cut`, `early_stop`.
+- Thêm Stage B cutline apply endpoint cho một selected chunk: `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline/apply`.
+- Stage B chỉ tạo PDF recut an toàn trong `chunk/{lesson_name}/doc_cutline/`, không overwrite `doc/*.pdf`, không gọi Kaggle/PaddleOCR và không batch process.
+- Refactor cutline debug artifacts vào folder ổn định `chunk/{lesson_name}/debug/{chunk_name}/` gồm `page.png`, `bbox.png`, `cutline.json`, `cutline_apply.json`; rerun cùng chunk sẽ overwrite các file này.
 - Cập nhật tài liệu cho workflow Topic/Lesson extraction hiện tại:
   - `front_matter.pdf` chỉ dùng làm Gemini input để lấy cấu trúc sách.
   - `original.pdf` là nguồn cắt final topic/lesson PDFs.

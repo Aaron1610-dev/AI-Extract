@@ -71,7 +71,6 @@ def detect_debug_cutline_for_chunk(
         job_id=job_id,
         lesson_name=lesson_name,
         chunk_name=chunk_name,
-        request_id=request_id,
     )
 
     _render_pdf_page_to_png(
@@ -115,6 +114,14 @@ def detect_debug_cutline_for_chunk(
         matched_text=_optional_str(result.get("matched_text")),
         bbox=bbox,
         y_cut=y_cut,
+        match_score=_optional_int(result.get("match_score") or result.get("best_match_score")),
+        matched_prefix=_optional_int(result.get("matched_prefix")),
+        expected_len=_optional_int(result.get("expected_len")),
+        match_ratio=_optional_float(result.get("match_ratio")),
+        best_mode=_optional_str(result.get("best_mode")),
+        weak_cut=_optional_bool(result.get("weak_cut")),
+        force_cut=_optional_bool(result.get("force_cut")),
+        early_stop=_optional_bool(result.get("early_stop")),
         reason=_optional_str(result.get("reason")),
         debug_json_path=str(debug_json_path),
         debug_page_path=str(page_image_path),
@@ -185,6 +192,25 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y"}
+    return bool(value)
 
 
 def _int_list_or_none(value: Any) -> list[int] | None:

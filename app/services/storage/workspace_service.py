@@ -52,8 +52,20 @@ def get_chunk_lesson_doc_dir(job_id: str, lesson_name: str) -> Path:
     return get_chunk_lesson_dir(job_id, lesson_name) / "doc"
 
 
-def get_chunk_debug_dir(job_id: str, lesson_name: str) -> Path:
-    return get_chunk_lesson_dir(job_id, lesson_name) / "debug"
+def get_chunk_doc_dir(job_id: str, lesson_name: str) -> Path:
+    return get_chunk_lesson_doc_dir(job_id, lesson_name)
+
+
+def get_chunk_doc_backup_dir(job_id: str, lesson_name: str) -> Path:
+    return get_chunk_lesson_dir(job_id, lesson_name) / "doc_backup_before_cutline"
+
+
+def get_chunk_cutline_doc_dir(job_id: str, lesson_name: str) -> Path:
+    return get_chunk_lesson_dir(job_id, lesson_name) / "doc_cutline"
+
+
+def get_chunk_debug_dir(job_id: str, lesson_name: str, chunk_name: str) -> Path:
+    return get_chunk_lesson_dir(job_id, lesson_name) / "debug" / chunk_name
 
 
 def get_topic_raw_json_path(job_id: str) -> Path:
@@ -96,12 +108,20 @@ def get_chunk_pdf_path(job_id: str, lesson_name: str, chunk_name: str) -> Path:
     return get_chunk_lesson_doc_dir(job_id, lesson_name) / f"{chunk_name}.pdf"
 
 
+def get_chunk_doc_backup_pdf_path(job_id: str, lesson_name: str, chunk_name: str) -> Path:
+    return get_chunk_doc_backup_dir(job_id, lesson_name) / f"{chunk_name}.pdf"
+
+
+def get_chunk_cutline_pdf_path(job_id: str, lesson_name: str, chunk_name: str) -> Path:
+    return get_chunk_cutline_doc_dir(job_id, lesson_name) / f"{chunk_name}.pdf"
+
+
 def get_chunk_cutline_json_path(
     job_id: str,
     lesson_name: str,
     chunk_name: str,
 ) -> Path:
-    return get_chunk_debug_dir(job_id, lesson_name) / f"{chunk_name}_cutline.json"
+    return get_chunk_debug_dir(job_id, lesson_name, chunk_name) / "cutline.json"
 
 
 def get_chunk_cutline_page_image_path(
@@ -109,7 +129,7 @@ def get_chunk_cutline_page_image_path(
     lesson_name: str,
     chunk_name: str,
 ) -> Path:
-    return get_chunk_debug_dir(job_id, lesson_name) / f"{chunk_name}_page.png"
+    return get_chunk_debug_dir(job_id, lesson_name, chunk_name) / "page.png"
 
 
 def get_chunk_cutline_bbox_image_path(
@@ -117,16 +137,31 @@ def get_chunk_cutline_bbox_image_path(
     lesson_name: str,
     chunk_name: str,
 ) -> Path:
-    return get_chunk_debug_dir(job_id, lesson_name) / f"{chunk_name}_bbox.png"
+    return get_chunk_debug_dir(job_id, lesson_name, chunk_name) / "bbox.png"
+
+
+def get_chunk_cutline_apply_json_path(
+    job_id: str,
+    lesson_name: str,
+    chunk_name: str,
+) -> Path:
+    return get_chunk_debug_dir(job_id, lesson_name, chunk_name) / "cutline_apply.json"
+
+
+def get_chunk_cutline_promote_json_path(
+    job_id: str,
+    lesson_name: str,
+    chunk_name: str,
+) -> Path:
+    return get_chunk_debug_dir(job_id, lesson_name, chunk_name) / "cutline_promote.json"
 
 
 def get_chunk_cutline_request_dir(
     job_id: str,
     lesson_name: str,
     chunk_name: str,
-    request_id: str,
 ) -> Path:
-    return get_chunk_debug_dir(job_id, lesson_name) / "kaggle" / f"{chunk_name}_{request_id}"
+    return get_chunk_debug_dir(job_id, lesson_name, chunk_name) / "kaggle"
 
 
 def create_job_dirs(job_id: str) -> tuple[Path, Path]:

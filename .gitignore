@@ -5,8 +5,11 @@ __pycache__/
 .env
 app/core/config.env
 app/core/gemini_rotation_state.json
+kaggle.json
+**/kaggle.json
 
 workspace/tmp/*
+workspace/kaggle_cutline_debug/*
 workspace/uploads/*
 !workspace/uploads/.gitkeep
 

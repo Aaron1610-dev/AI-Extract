@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
+from app.core.paths import CORE_DIR
 from app.core.paths import BASE_DIR, WORKSPACE_DIR
 from app.services.storage.workspace_service import read_json, write_json
 
@@ -17,6 +20,12 @@ KERNEL_SOURCE_DIR = BASE_DIR / "app" / "pipeline" / "kaggle_kernels" / "debug-cu
 DEFAULT_WORK_DIR = WORKSPACE_DIR / "kaggle_cutline_debug"
 DEFAULT_POLL_SECONDS = 20
 DEFAULT_TIMEOUT_SECONDS = 1800
+REQUIRED_ENV_KEYS = [
+    "AI_EXTRACT_KAGGLE_USERNAME",
+    "AI_EXTRACT_KAGGLE_KEY",
+    "AI_EXTRACT_KAGGLE_DATASET_SLUG",
+    "AI_EXTRACT_KAGGLE_KERNEL_REF",
+]
 
 
 class KaggleCutlineDebugNotConfigured(RuntimeError):
@@ -105,20 +114,83 @@ def run_kaggle_cutline_debug(
     return result
 
 
-def _load_config() -> KaggleCutlineConfig:
-    username = os.getenv("AI_EXTRACT_KAGGLE_USERNAME") or os.getenv("KAGGLE_USERNAME")
-    key = os.getenv("AI_EXTRACT_KAGGLE_KEY") or os.getenv("KAGGLE_KEY")
+def check_kaggle_cutline_readiness() -> dict[str, Any]:
+    _load_local_env()
+    missing_env = _missing_required_env()
+    kernel_script_exists = (KERNEL_SOURCE_DIR / "script.py").exists()
+    kaggle_cli_available = shutil.which("kaggle") is not None
+
+    notes: list[str] = []
+    if missing_env:
+        notes.append("Missing required Kaggle configuration.")
+    if not kernel_script_exists:
+        notes.append(f"Missing kernel script: {KERNEL_SOURCE_DIR / 'script.py'}")
+    if not kaggle_cli_available:
+        notes.append("Kaggle CLI is not available on PATH.")
+
+    ready = not missing_env and kernel_script_exists and kaggle_cli_available
+    return {
+        "ready": ready,
+        "missing_env": missing_env,
+        "kernel_script_exists": kernel_script_exists,
+        "kaggle_cli_available": kaggle_cli_available,
+        "required_env": REQUIRED_ENV_KEYS,
+        "optional_env": [
+            "AI_EXTRACT_KAGGLE_WORK_DIR",
+            "AI_EXTRACT_KAGGLE_POLL_SECONDS",
+            "AI_EXTRACT_KAGGLE_TIMEOUT_SECONDS",
+        ],
+        "notes": notes,
+    }
+
+
+def prepare_kaggle_cutline_debug_package(
+    *,
+    request_payload: dict[str, Any],
+    page_image_path: Path,
+    request_dir: Path,
+) -> dict[str, str]:
+    """Build the local one-page Kaggle package without submitting it."""
+
+    _load_local_env()
+    config = _load_config(validate_cli=False)
+    dataset_dir = request_dir / "dataset"
+    kernel_dir = request_dir / "kernel"
+    _prepare_dataset(
+        dataset_dir=dataset_dir,
+        dataset_ref=config.dataset_ref,
+        request_payload=request_payload,
+        page_image_path=page_image_path,
+    )
+    _prepare_kernel(
+        kernel_dir=kernel_dir,
+        kernel_ref=config.kernel_ref,
+        dataset_ref=config.dataset_ref,
+    )
+    return {
+        "dataset_dir": str(dataset_dir),
+        "kernel_dir": str(kernel_dir),
+        "run_request_path": str(dataset_dir / "run_request.json"),
+        "page_image_path": str(dataset_dir / "page.png"),
+    }
+
+
+def _load_config(*, validate_cli: bool = True) -> KaggleCutlineConfig:
+    del validate_cli
+    _load_local_env()
+    username = os.getenv("AI_EXTRACT_KAGGLE_USERNAME")
+    key = os.getenv("AI_EXTRACT_KAGGLE_KEY")
     dataset_slug = os.getenv("AI_EXTRACT_KAGGLE_DATASET_SLUG", "").strip()
     kernel_ref = os.getenv("AI_EXTRACT_KAGGLE_KERNEL_REF", "").strip()
     work_dir = Path(os.getenv("AI_EXTRACT_KAGGLE_WORK_DIR", str(DEFAULT_WORK_DIR)))
     poll_seconds = int(os.getenv("AI_EXTRACT_KAGGLE_POLL_SECONDS", str(DEFAULT_POLL_SECONDS)))
     timeout_seconds = int(os.getenv("AI_EXTRACT_KAGGLE_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS)))
 
-    if not username or not key or not dataset_slug or not kernel_ref:
+    missing = _missing_required_env()
+    if missing:
         raise KaggleCutlineDebugNotConfigured(
-            "Kaggle cutline debug is not configured. Please configure "
-            "AI_EXTRACT_KAGGLE_USERNAME, AI_EXTRACT_KAGGLE_KEY, "
-            "AI_EXTRACT_KAGGLE_DATASET_SLUG, and AI_EXTRACT_KAGGLE_KERNEL_REF."
+            "Kaggle cutline debug is not configured. Missing required "
+            f"variables: {', '.join(missing)}."
         )
 
     dataset_ref = dataset_slug if "/" in dataset_slug else f"{username}/{dataset_slug}"
@@ -131,6 +203,23 @@ def _load_config() -> KaggleCutlineConfig:
         poll_seconds=poll_seconds,
         timeout_seconds=timeout_seconds,
     )
+
+
+def _load_local_env() -> None:
+    load_dotenv(CORE_DIR / "config.env")
+
+
+def _missing_required_env() -> list[str]:
+    missing: list[str] = []
+    if not os.getenv("AI_EXTRACT_KAGGLE_USERNAME"):
+        missing.append("AI_EXTRACT_KAGGLE_USERNAME")
+    if not os.getenv("AI_EXTRACT_KAGGLE_KEY"):
+        missing.append("AI_EXTRACT_KAGGLE_KEY")
+    if not os.getenv("AI_EXTRACT_KAGGLE_DATASET_SLUG"):
+        missing.append("AI_EXTRACT_KAGGLE_DATASET_SLUG")
+    if not os.getenv("AI_EXTRACT_KAGGLE_KERNEL_REF"):
+        missing.append("AI_EXTRACT_KAGGLE_KERNEL_REF")
+    return missing
 
 
 def _kaggle_env(config: KaggleCutlineConfig) -> dict[str, str]:
