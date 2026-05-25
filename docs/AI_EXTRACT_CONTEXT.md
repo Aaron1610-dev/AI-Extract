@@ -243,9 +243,12 @@ File được tạo hoặc cập nhật:
 - Runner có thể gọi Gemini PDF extraction và normalize topics/lessons.
 - Runner hiện đã wire vào Topic API.
 - Adapt automatic offset detection từ `FastAPI-Khoa-Luan/gemini_pipeline`.
-- Thêm `make_single_page_pdf(...)` để tạo PDF 1 trang phục vụ verify offset.
-- Thêm `offset_detector.py` dùng single-page verification PDFs và `generate_with_pdf(...)`.
+- Thêm `offset_detector.py` dùng OCR bottom-crop cumulative voting.
 - Auto offset detection hiện được dùng trong real Topic API thông qua `topic_runner.py`.
+- Thay Gemini verify offset detection bằng OCR bottom-crop cumulative voting.
+- Thêm offset detection dựa trên Tesseract/PyMuPDF/Pillow/Numpy/OpenCV.
+- `offset=auto` không gọi Gemini verify theo default path.
+- Gemini vẫn được dùng cho main Topic/Lesson structure extraction từ full PDF.
 - Thay public Topic stub extraction bằng real Gemini `topic_runner`.
 - Topic extraction API hiện gọi Gemini trực tiếp.
 - `offset=auto` là mặc định cho Topic extract API.

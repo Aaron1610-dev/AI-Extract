@@ -32,18 +32,17 @@ Dependency hiện có:
 Các helper nền đã có:
 
 - Minimal Topic/Lesson prompt: `build_topic_lesson_prompt()`.
-- Verify prompt cho offset sau này: `build_topic_verify_prompt(topic_label)`.
+- Gemini verify prompt cho offset đã được gỡ khỏi pipeline helper.
 - Loose JSON parser: `parse_json_loose(...)`.
 - Normalizer: `normalize_topic_lesson_payload(...)`.
 - PDF page utilities:
   - `count_pdf_pages(...)`
-  - `make_single_page_pdf(...)`
   - `printed_to_pdf_page(...)`
   - `clamp_page_range(...)`
   - `split_pdf_range(...)`
   - `split_topics_and_lessons(...)`
 - Manual runner: `run_topic_extraction(...)`.
-- Auto offset detector: `detect_page_offset(...)`.
+- OCR auto offset detector: `detect_page_offset_by_bottom_ocr(...)` và wrapper `detect_page_offset(...)`.
 
 `run_topic_extraction(...)` đã được implement để test thủ công. Runner này gọi `generate_with_pdf(...)`, parse JSON, có thể tự detect offset, normalize topics/lessons, và có thể split PDF nếu truyền `split_pdf=True`.
 
@@ -52,9 +51,22 @@ Các phần còn cần kiểm tra sau khi thay Topic stub:
 - Manual test với một PDF sách thật.
 - Độ ổn định của `offset=auto` trên nhiều sách.
 
-Auto offset detection đã được adapt từ `FastAPI-Khoa-Luan/gemini_pipeline`: tạo single-page verification PDFs quanh trang in bắt đầu của topic đầu tiên đáng tin cậy, hỏi Gemini bằng verify prompt, rồi tính `offset = actual_page - start_printed`.
+Auto offset detection hiện dùng bottom-crop OCR cumulative voting, không gọi Gemini verify. Công thức:
 
-Preview PDF creation vẫn cố ý chưa được implement trong AI-Extract. Auto offset detection dùng single-page PDF, không dùng preview PDF.
+```text
+actual_page = printed_page + offset
+offset = actual_page - printed_page
+```
+
+Default OCR settings:
+
+- `anchor_page=28`
+- `pages_per_round=3`
+- `min_majority=2`
+- `crop_px=250`
+- `max_abs_offset=5`
+
+Preview PDF creation vẫn cố ý chưa được implement trong AI-Extract. Auto offset detection dùng bottom 250px OCR crop từ trang render, không dùng single-page Gemini PDF verification.
 
 ## 3. File tối thiểu cần implement sau
 
@@ -68,8 +80,9 @@ Preview PDF creation vẫn cố ý chưa được implement trong AI-Extract. Au
 `app/pipeline/gemini_extract/offset_detector.py`
 
 - Có `detect_page_offset(...)`.
-- Dùng `make_single_page_pdf(...)`, `build_topic_verify_prompt(...)`, `generate_with_pdf(...)`, và `parse_json_loose(...)`.
-- Reuse Gemini key rotation vì đi qua AI-Extract `generate_with_pdf(...)`.
+- Có `detect_page_offset_by_bottom_ocr(...)`.
+- Dùng PyMuPDF render trang PDF, Pillow crop đáy trang, OpenCV/Numpy preprocess và Tesseract OCR digits.
+- Không gọi Gemini cho offset detection theo default path.
 - Được dùng bởi `run_topic_extraction(...)`; Topic API gọi runner này.
 
 `app/services/extraction/topic_service.py`
@@ -97,7 +110,7 @@ Flow hiện tại của Topic extract API:
 4. Build prompt bằng `build_topic_lesson_prompt()`.
 5. Gọi Gemini bằng `generate_with_pdf(...)`.
 6. Parse response bằng `parse_json_loose(...)`.
-7. Nếu `offset="auto"`, gọi `detect_page_offset(...)` trên topics parse lần đầu.
+7. Nếu `offset="auto"`, gọi `detect_page_offset(...)`; hiện wrapper này dùng bottom-crop OCR.
 8. Normalize bằng `normalize_topic_lesson_payload(...)` với manual/detected offset.
 9. Ghi full raw output:
    - `workspace/outputs/{job_id}/topic/topic_raw.json`
@@ -128,10 +141,12 @@ Shape đề xuất cho `topic/topic_raw.json`:
 ## 5. Rủi ro và điểm chưa rõ
 
 - Chưa gọi Gemini trong validation, nên `generate_with_pdf(...)` chưa được kiểm thử với PDF thật.
-- Auto offset detection đã wire vào manual runner, nhưng chưa test với Gemini thật trong validation.
+- Auto offset detection đã wire vào Topic API và dùng OCR; không gọi Gemini verify theo default.
+- Cần Tesseract binary ở OS level, ví dụ macOS: `brew install tesseract`.
 - Nếu bỏ offset verification ở bản đầu, page range có thể sai với sách có số trang in lệch so với trang PDF.
 - Output JSON từ Gemini có thể không ổn định; cần test parser/normalizer với response thật.
 - Preview PDF creation chưa implement theo yêu cầu Step 4B.
+- Gemini vẫn được dùng để trích xuất cấu trúc Topic/Lesson từ full PDF.
 - Topic stage cũ trả cả topics và lessons. AI-Extract cần giữ điều này vì Lesson stage dựa vào `lesson/lesson_raw.json`.
 
 ## 6. Khuyến nghị bước code nhỏ nhất tiếp theo
@@ -139,7 +154,7 @@ Shape đề xuất cho `topic/topic_raw.json`:
 Bước nhỏ nhất tiếp theo:
 
 1. Test API thật trên một PDF qua Swagger với `offset=auto&split_pdf=true`.
-2. Kiểm tra `offset_detection.detected`, `offset`, và file PDF split ở `topic/doc/`, `lesson/doc/`.
+2. Kiểm tra `offset_detection.strategy = bottom_ocr_cumulative_vote`, `offset`, và file PDF split ở `topic/doc/`, `lesson/doc/`.
 3. Sau khi topic review ổn định, dùng flow approve topics rồi chạy lesson range-overlap như hiện tại.
 
 Topic API hiện đã gọi Gemini trực tiếp. Không có `engine=stub` mode.

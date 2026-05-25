@@ -68,33 +68,6 @@ def split_pdf_range(
     return output_path
 
 
-def make_single_page_pdf(
-    source_pdf: str | Path,
-    output_pdf: str | Path,
-    page_number: int,
-) -> Path:
-    source_path = _validate_pdf_path(source_pdf)
-    output_path = Path(output_pdf)
-
-    reader = PdfReader(str(source_path))
-    total_pages = len(reader.pages)
-
-    if page_number < 1 or page_number > total_pages:
-        raise ValueError(
-            f"page_number={page_number} is outside PDF page count {total_pages}"
-        )
-
-    writer = PdfWriter()
-    writer.add_page(reader.pages[page_number - 1])
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with output_path.open("wb") as file_obj:
-        writer.write(file_obj)
-
-    return output_path
-
-
 def split_topics_and_lessons(
     source_pdf: str | Path,
     output_root: str | Path,
