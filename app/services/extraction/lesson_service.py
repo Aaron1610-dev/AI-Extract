@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.schemas.extraction import (
     ExtractionJobStatus,
     LessonApproveResponse,
@@ -26,6 +28,17 @@ class LessonPrerequisiteError(RuntimeError):
 
 class LessonsAlreadyApprovedError(RuntimeError):
     pass
+
+
+_LESSON_HEADING_RE = re.compile(r"^\s*Bài\s+\d+", re.IGNORECASE)
+
+
+def is_valid_review_lesson(item: dict) -> bool:
+    heading = item.get("heading")
+    if not isinstance(heading, str):
+        return False
+
+    return _LESSON_HEADING_RE.match(heading.strip()) is not None
 
 
 def _read_topics_approved_or_409(job_id: str) -> list[TopicItem]:
@@ -70,11 +83,16 @@ def _build_lessons_from_ranges(
 ) -> list[LessonItem]:
     lessons: list[LessonItem] = []
     seen_raw_keys: set[tuple] = set()
+    reviewable_raw_lessons = [
+        raw_lesson
+        for raw_lesson in raw_lessons
+        if is_valid_review_lesson(raw_lesson)
+    ]
 
     for topic in approved_topics:
         topic_lessons: list[LessonItem] = []
 
-        for raw_lesson in raw_lessons:
+        for raw_lesson in reviewable_raw_lessons:
             lesson_start = int(raw_lesson.get("start") or 0)
             lesson_end = int(raw_lesson.get("end") or 0)
             raw_key = (
@@ -100,22 +118,17 @@ def _build_lessons_from_ranges(
                     )
                 )
 
-        if not topic_lessons:
-            topic_lessons.append(
-                LessonItem(
-                    name=f"lesson_fallback_for_{topic.name}",
-                    start=topic.start,
-                    end=topic.end,
-                    heading=topic.heading,
-                    title=topic.title,
-                    topic_name=topic.name,
-                    topic_title=topic.title,
-                )
-            )
-
         lessons.extend(topic_lessons)
 
-    return lessons
+    return _renumber_lessons(lessons)
+
+
+def _renumber_lessons(lessons: list[LessonItem]) -> list[LessonItem]:
+    sorted_lessons = sorted(lessons, key=lambda lesson: (lesson.start, lesson.end))
+    return [
+        lesson.model_copy(update={"name": f"lesson_{index:02d}"})
+        for index, lesson in enumerate(sorted_lessons, start=1)
+    ]
 
 
 def build_lessons_from_approved_topics(job_id: str) -> LessonExtractionResponse:

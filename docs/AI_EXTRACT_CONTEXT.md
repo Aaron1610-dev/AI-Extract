@@ -134,7 +134,32 @@ Endpoint cũ `POST /api/extract/jobs/{job_id}/lessons/extract` đã được đ�
 - `workspace/outputs/{job_id}/topic/topics_approved.json`
 - `workspace/outputs/{job_id}/lesson/lesson_raw.json`
 
-Nó map lessons vào topics bằng page range overlap, ghi:
+`lesson_raw.json` là raw Gemini output nên có thể chứa cả các item mục lục không phải bài học thật, ví dụ `"Bài tập cuối chương I"` với `heading=null`. File raw này được giữ nguyên.
+
+Khi build reviewable lessons, `/lessons/build` chỉ nhận các item có heading bài học đánh số hợp lệ, hiện match pattern case-insensitive:
+
+```text
+^\\s*Bài\\s+\\d+
+```
+
+Ví dụ hợp lệ:
+
+- `Bài 1.`
+- `Bài 2`
+- `BÀI 3`
+- `bài 4.`
+
+Ví dụ bị loại khỏi `lessons.json`:
+
+- `heading = null`
+- `heading = ""`
+- `Bài tập cuối chương I`
+- `Ôn tập chương I`
+- `Thực hành cuối chương`
+
+Sau khi lọc, các lesson reviewable được sort theo `start/end` và renumber tuần tự `lesson_01`, `lesson_02`, `lesson_03`, ... Không tạo `lessons_skipped.json` và không expose skipped items trong API response.
+
+Sau đó endpoint map valid lessons vào topics bằng page range overlap, ghi:
 
 ```text
 workspace/outputs/{job_id}/lesson/lessons.json
@@ -337,6 +362,8 @@ POST /api/extract/jobs/{job_id}/topics/approve
 
 POST /api/extract/jobs/{job_id}/lessons/build
 -> build lessons.json from approved topics + lesson_raw
+-> filter non-numbered/null-heading TOC items
+-> renumber reviewable lessons sequentially
 -> map each lesson to a topic
 -> status = reviewing_lessons
 
@@ -399,6 +426,9 @@ Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuy
 - Simplify public Topic extraction response còn `job_id`, `status`, `offset`, `topics`.
 - Giữ full debug/internal extraction data trong `topic/topic_raw.json`.
 - Không đổi route path hoặc extraction behavior khi simplify response.
+- Filter null/empty/non-numbered lesson headings trong `/lessons/build`.
+- Giữ `lesson/lesson_raw.json` nguyên trạng, chỉ lọc output reviewable `lesson/lessons.json`.
+- Renumber reviewable lessons tuần tự sau khi lọc; không tạo `lessons_skipped.json`.
 - Cập nhật tài liệu cho workflow Topic/Lesson extraction hiện tại:
   - `front_matter.pdf` chỉ dùng làm Gemini input để lấy cấu trúc sách.
   - `original.pdf` là nguồn cắt final topic/lesson PDFs.
