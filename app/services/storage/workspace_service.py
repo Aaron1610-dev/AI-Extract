@@ -40,6 +40,14 @@ def get_lesson_dir(job_id: str) -> Path:
     return get_job_output_dir(job_id) / "lesson"
 
 
+def get_keyword_dir(job_id: str) -> Path:
+    return get_job_output_dir(job_id) / "keyword"
+
+
+def get_keyword_lesson_dir(job_id: str, lesson_name: str) -> Path:
+    return get_keyword_dir(job_id) / lesson_name
+
+
 def get_chunk_dir(job_id: str) -> Path:
     return get_job_output_dir(job_id) / "chunk"
 
@@ -138,6 +146,26 @@ def get_chunk_cutline_promote_json_path(
 
 def get_lesson_cutline_full_json_path(job_id: str, lesson_name: str) -> Path:
     return get_chunk_lesson_debug_dir(job_id, lesson_name) / "lesson_cutline_full.json"
+
+
+def get_lesson_keyword_raw_path(job_id: str, lesson_name: str) -> Path:
+    return get_keyword_lesson_dir(job_id, lesson_name) / "lesson_keywords_raw.json"
+
+
+def get_lesson_keyword_path(job_id: str, lesson_name: str) -> Path:
+    return get_keyword_lesson_dir(job_id, lesson_name) / "lesson_keywords.json"
+
+
+def get_chunk_keyword_raw_path(job_id: str, lesson_name: str, chunk_name: str) -> Path:
+    return get_keyword_lesson_dir(job_id, lesson_name) / f"{chunk_name}_keywords_raw.json"
+
+
+def get_chunk_keyword_path(job_id: str, lesson_name: str, chunk_name: str) -> Path:
+    return get_keyword_lesson_dir(job_id, lesson_name) / f"{chunk_name}_keywords.json"
+
+
+def get_keyword_summary_path(job_id: str, lesson_name: str) -> Path:
+    return get_keyword_lesson_dir(job_id, lesson_name) / "keywords_summary.json"
 
 
 def get_chunk_cutline_request_dir(

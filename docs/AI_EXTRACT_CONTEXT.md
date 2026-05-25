@@ -695,6 +695,70 @@ workspace/outputs/{job_id}/chunk/{lesson_name}/debug/lesson_cutline_full.json
 
 Full lesson rebuild không tạo thêm PDF folder, không tạo preview/backup folder, không sửa chunk JSON và không update job status. Với mỗi chunk, start boundary lấy từ cutline của chính chunk nếu có; end boundary lấy từ cutline của next chunk nếu next chunk start page nằm trong range hiện tại. PDF được ghi trực tiếp vào `chunk/{lesson_name}/doc/`.
 
+### Keyword extraction debug cho một lesson
+
+Endpoint:
+
+```text
+POST /api/extract/jobs/{job_id}/keywords/debug/lesson/{lesson_name}/extract
+```
+
+Stage này chạy sau khi lesson/chunk PDFs đã finalized. Đây là output file-based để review/debug, chưa import vào MongoDB/MinIO/PostgreSQL/Neo4j.
+
+Input bắt buộc:
+
+```text
+workspace/outputs/{job_id}/lesson/lessons_approved.json
+workspace/outputs/{job_id}/lesson/doc/{lesson_name}.pdf
+workspace/outputs/{job_id}/chunk/{lesson_name}/chunk_*.json
+```
+
+Rule theo old thesis keyword extraction:
+
+- Nếu lesson chỉ có đúng 1 chunk: dùng full lesson PDF `lesson/doc/{lesson_name}.pdf` và extract 10 keywords cho cả lesson.
+- Nếu lesson có nhiều chunk: dùng từng finalized chunk PDF trong `chunk/{lesson_name}/doc/chunk_*.pdf` và extract 5 keywords cho mỗi chunk.
+
+Output folder:
+
+```text
+workspace/outputs/{job_id}/keyword/{lesson_name}/
+```
+
+One-chunk lesson:
+
+```text
+lesson_keywords_raw.json
+lesson_keywords.json
+keywords_summary.json
+```
+
+Multi-chunk lesson:
+
+```text
+chunk_01_keywords_raw.json
+chunk_01_keywords.json
+chunk_02_keywords_raw.json
+chunk_02_keywords.json
+keywords_summary.json
+```
+
+Normalized keyword JSON giữ shape:
+
+```json
+{
+  "source_type": "lesson",
+  "source_name": "lesson_01",
+  "keyword_limit": 10,
+  "keywords": [
+    {
+      "keyword": "tăng trưởng kinh tế",
+      "reason": "Khái niệm trung tâm của bài học",
+      "confidence": null
+    }
+  ]
+}
+```
+
 ## 13. Scripts cleanup note
 
 Production OCR offset logic hiện nằm trong:
@@ -761,6 +825,8 @@ Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuy
 - Refactor cutline debug artifacts vào folder ổn định `chunk/{lesson_name}/debug/{chunk_name}/` gồm `page.png`, `bbox.png`, `cutline.json`, `cutline_promote.json`; rerun cùng chunk sẽ overwrite các file này.
 - Thêm full-lesson cutline endpoint cho một selected lesson: `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/cutline/full`.
 - Full-lesson cutline detect tất cả required boundaries trước, fail thì không rebuild PDFs, success thì rebuild toàn bộ `chunk/{lesson_name}/doc/chunk_*.pdf` trong một pass từ `lesson/doc/{lesson_name}.pdf`; không xử lý all lessons và không batch toàn cục.
+- Thêm keyword extraction debug endpoint cho một selected lesson: `POST /api/extract/jobs/{job_id}/keywords/debug/lesson/{lesson_name}/extract`.
+- Keyword extraction giữ file-based review output trong `keyword/{lesson_name}/`: một chunk dùng lesson PDF và 10 keywords, nhiều chunk dùng từng finalized chunk PDF và 5 keywords/chunk; chưa thêm DB/object-storage/import logic.
 - Cập nhật tài liệu cho workflow Topic/Lesson extraction hiện tại:
   - `front_matter.pdf` chỉ dùng làm Gemini input để lấy cấu trúc sách.
   - `original.pdf` là nguồn cắt final topic/lesson PDFs.

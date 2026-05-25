@@ -151,3 +151,25 @@ class LessonCutlineFullResponse(BaseModel):
     failed_chunks: list[dict[str, str]]
     updated_pdfs: list[str]
     debug_summary_path: str
+
+
+class KeywordItem(BaseModel):
+    keyword: str
+    reason: str | None = None
+    confidence: float | None = None
+
+
+class LessonKeywordDebugResult(BaseModel):
+    source_type: str
+    source_name: str
+    keywords: list[KeywordItem]
+
+
+class LessonKeywordDebugResponse(BaseModel):
+    job_id: str
+    lesson_name: str
+    chunk_count: int
+    strategy: str
+    keyword_limit: int
+    results: list[LessonKeywordDebugResult]
+    summary_path: str
