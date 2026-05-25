@@ -16,6 +16,7 @@ from app.services.extraction.chunk_cutline_promote_service import (
     validate_cutline_confidence,
 )
 from app.services.extraction.job_service import get_job
+from app.services.extraction.keyword_debug_service import extract_keywords_for_lesson_debug
 from app.services.storage.workspace_service import (
     get_chunk_cutline_page_image_path,
     get_chunk_doc_dir,
@@ -161,6 +162,25 @@ def process_full_lesson_cutlines(
         boundaries=boundaries,
         status="completed",
     )
+    try:
+        keyword_response = extract_keywords_for_lesson_debug(
+            job_id=job_id,
+            lesson_name=lesson_name,
+        )
+        keyword_results = [item.model_dump(mode="json") for item in keyword_response.results]
+        summary_payload["keyword_extracted"] = True
+        summary_payload["keyword_paths"] = [
+            item["keyword_path"]
+            for item in keyword_results
+            if isinstance(item.get("keyword_path"), str)
+        ]
+        summary_payload["keyword_results"] = keyword_results
+
+    except Exception as exc:
+        summary_payload["status"] = "completed_with_keyword_error"
+        summary_payload["keyword_extracted"] = False
+        summary_payload["keyword_error"] = f"Gemini keyword extraction failed: {exc}"
+
     write_json(summary_path, summary_payload)
     return _response_from_summary(summary_payload, summary_path)
 
@@ -393,6 +413,8 @@ def _build_summary_payload(
             for chunk_name, boundary in boundaries.items()
         },
         "status": status,
+        "keyword_extracted": False,
+        "keyword_paths": [],
     }
 
 
@@ -409,6 +431,9 @@ def _response_from_summary(
         failed_chunks=list(summary_payload["failed_chunks"]),
         updated_pdfs=list(summary_payload["updated_pdfs"]),
         debug_summary_path=str(summary_path),
+        keyword_extracted=bool(summary_payload.get("keyword_extracted")),
+        keyword_results=list(summary_payload.get("keyword_results") or []),
+        keyword_error=_optional_str(summary_payload.get("keyword_error")),
     )
 
 

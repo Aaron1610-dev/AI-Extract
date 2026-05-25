@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ExtractionJobStatus(str, Enum):
@@ -142,17 +142,6 @@ class ChunkCutlineDebugResponse(BaseModel):
     debug_promote_json_path: str | None = None
 
 
-class LessonCutlineFullResponse(BaseModel):
-    job_id: str
-    lesson_name: str
-    status: str
-    processed_chunks: list[str]
-    skipped_chunks: list[dict[str, str]]
-    failed_chunks: list[dict[str, str]]
-    updated_pdfs: list[str]
-    debug_summary_path: str
-
-
 class KeywordItem(BaseModel):
     keyword_name: str
 
@@ -169,3 +158,17 @@ class LessonKeywordDebugResponse(BaseModel):
     lesson_name: str
     chunk_count: int
     results: list[LessonKeywordDebugResult]
+
+
+class LessonCutlineFullResponse(BaseModel):
+    job_id: str
+    lesson_name: str
+    status: str
+    processed_chunks: list[str]
+    skipped_chunks: list[dict[str, str]]
+    failed_chunks: list[dict[str, str]]
+    updated_pdfs: list[str]
+    debug_summary_path: str
+    keyword_extracted: bool = False
+    keyword_results: list[LessonKeywordDebugResult] = Field(default_factory=list)
+    keyword_error: str | None = None

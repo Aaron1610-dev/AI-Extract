@@ -686,6 +686,9 @@ Endpoint này chỉ xử lý một selected lesson, không xử lý toàn bộ l
 - Skip các chunk `content_head=false`.
 - Nếu bất kỳ required cutline nào fail hoặc confidence không đủ, ghi summary `status=failed` và không rebuild official PDFs.
 - Nếu tất cả required cutlines hợp lệ, build boundary map rồi rebuild toàn bộ `chunk/{lesson_name}/doc/chunk_*.pdf` trong một pass từ `lesson/doc/{lesson_name}.pdf`.
+- Sau khi official chunk PDFs rebuild thành công, endpoint tự gọi keyword extraction cho cùng lesson.
+- Nếu cutline fail thì không chạy keyword extraction.
+- Nếu keyword extraction fail sau khi cutline đã thành công, không rollback PDFs; response/summary dùng `status=completed_with_keyword_error`, `keyword_extracted=false`, và ghi `keyword_error`.
 
 Output summary:
 
@@ -694,6 +697,12 @@ workspace/outputs/{job_id}/chunk/{lesson_name}/debug/lesson_cutline_full.json
 ```
 
 Full lesson rebuild không tạo thêm PDF folder, không tạo preview/backup folder, không sửa chunk JSON và không update job status. Với mỗi chunk, start boundary lấy từ cutline của chính chunk nếu có; end boundary lấy từ cutline của next chunk nếu next chunk start page nằm trong range hiện tại. PDF được ghi trực tiếp vào `chunk/{lesson_name}/doc/`.
+
+Keyword post-processing của `/cutline/full` dùng chung service với endpoint keyword debug:
+
+- One-chunk lesson: dùng `lesson/doc/{lesson_name}.pdf`, extract 10 keywords, ghi `chunk/{lesson_name}/keyword/keyword_chunk_01.json`.
+- Multi-chunk lesson: dùng các finalized `chunk/{lesson_name}/doc/chunk_*.pdf`, extract 5 keywords/chunk, ghi `chunk/{lesson_name}/keyword/keyword_chunk_*.json`.
+- Summary `lesson_cutline_full.json` có `keyword_extracted`, `keyword_paths`, và nếu lỗi thì có `keyword_error`.
 
 ### Keyword extraction debug cho một lesson
 
@@ -817,6 +826,7 @@ Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuy
 - Refactor cutline debug artifacts vào folder ổn định `chunk/{lesson_name}/debug/{chunk_name}/` gồm `page.png`, `bbox.png`, `cutline.json`, `cutline_promote.json`; rerun cùng chunk sẽ overwrite các file này.
 - Thêm full-lesson cutline endpoint cho một selected lesson: `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/cutline/full`.
 - Full-lesson cutline detect tất cả required boundaries trước, fail thì không rebuild PDFs, success thì rebuild toàn bộ `chunk/{lesson_name}/doc/chunk_*.pdf` trong một pass từ `lesson/doc/{lesson_name}.pdf`; không xử lý all lessons và không batch toàn cục.
+- Full-lesson cutline success tự chạy keyword extraction cho cùng lesson sau khi PDFs đã rebuild; nếu keyword lỗi thì giữ PDFs đã cập nhật và trả `completed_with_keyword_error`.
 - Thêm keyword extraction debug endpoint cho một selected lesson: `POST /api/extract/jobs/{job_id}/keywords/debug/lesson/{lesson_name}/extract`.
 - Keyword extraction giữ file-based review output trong `chunk/{lesson_name}/keyword/keyword_chunk_*.json`: một chunk dùng lesson PDF và 10 keywords, nhiều chunk dùng từng finalized chunk PDF và 5 keywords/chunk; chưa thêm DB/object-storage/import logic.
 - Cập nhật tài liệu cho workflow Topic/Lesson extraction hiện tại:
