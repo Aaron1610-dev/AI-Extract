@@ -377,13 +377,51 @@ POST /api/extract/jobs/{job_id}/lessons/approve
 
 ## 12. Chunk note
 
-Chunk extraction chưa được implement. Khi bổ sung sau này, chunk extraction nên chạy trên:
+Batch chunk extraction chưa được implement. Khi bổ sung sau này, chunk extraction nên chạy trên:
 
 ```text
 workspace/outputs/{job_id}/lesson/doc/*.pdf
 ```
 
 Không nên chạy chunk extraction trên `front_matter.pdf`, vì file này chỉ phục vụ Gemini đọc mục lục/phần đầu sách để lấy cấu trúc Topic/Lesson.
+
+### Chunk debug extraction
+
+Endpoint debug-only hiện có:
+
+```text
+POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}
+```
+
+Mục tiêu: test chất lượng chunk extraction trên đúng một lesson PDF trước khi triển khai batch extraction.
+
+Input:
+
+```text
+workspace/outputs/{job_id}/lesson/doc/{lesson_name}.pdf
+workspace/outputs/{job_id}/lesson/lessons_approved.json
+```
+
+Behavior:
+
+- Validate job tồn tại.
+- Require `lessons_approved.json`.
+- Tìm lesson theo `lesson_name`.
+- Gọi Gemini với đúng một lesson PDF.
+- Normalize chunk names cục bộ: `chunk_01`, `chunk_02`, ...
+- Gắn metadata `lesson_name`, `lesson_title`, `topic_name`, `topic_title` vào từng chunk.
+- Không update `job.json` status.
+- Không tạo `chunk/chunks.json`.
+- Không tạo `chunk/chunks_approved.json`.
+- Không split chunk PDFs.
+
+Debug artifact:
+
+```text
+workspace/outputs/{job_id}/chunk/debug/{lesson_name}_chunk_debug.json
+```
+
+Endpoint này chỉ dùng để tune prompt và kiểm tra chất lượng chunk extraction an toàn trước khi có batch flow.
 
 ## 13. Scripts cleanup note
 
@@ -429,6 +467,8 @@ Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuy
 - Filter null/empty/non-numbered lesson headings trong `/lessons/build`.
 - Giữ `lesson/lesson_raw.json` nguyên trạng, chỉ lọc output reviewable `lesson/lessons.json`.
 - Renumber reviewable lessons tuần tự sau khi lọc; không tạo `lessons_skipped.json`.
+- Thêm debug-only chunk endpoint cho một lesson: `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}`.
+- Debug chunk endpoint ghi `chunk/debug/{lesson_name}_chunk_debug.json`, không update job status, không tạo batch `chunks.json`, không approve chunks và không split chunk PDFs.
 - Cập nhật tài liệu cho workflow Topic/Lesson extraction hiện tại:
   - `front_matter.pdf` chỉ dùng làm Gemini input để lấy cấu trúc sách.
   - `original.pdf` là nguồn cắt final topic/lesson PDFs.

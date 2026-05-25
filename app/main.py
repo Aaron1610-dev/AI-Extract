@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.debug import router as debug_router
+from app.api.routes.extract_chunks_debug import router as extract_chunks_debug_router
 from app.api.routes.extract_jobs import router as extract_jobs_router
 from app.api.routes.extract_lessons import router as extract_lessons_router
 from app.api.routes.extract_topics import router as extract_topics_router
@@ -34,4 +35,5 @@ app.include_router(keywords_router)
 app.include_router(extract_jobs_router)
 app.include_router(extract_topics_router)
 app.include_router(extract_lessons_router)
+app.include_router(extract_chunks_debug_router)
 app.include_router(debug_router)
