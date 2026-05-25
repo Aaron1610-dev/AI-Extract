@@ -373,10 +373,10 @@ File dạng `<bundle>/Lesson/lesson_01/<book_stem>_lesson_01.json`:
 
 | Source file in gemini_pipeline | Purpose | Needed for Topic? | Needed for Lesson? | Adapt strategy for AI-Extract |
 |---|---|---:|---:|---|
-| `sgk_extract/prompts.py` | Prompt TOC Topic/Lesson và prompt verify topic start | Có | Gián tiếp | Copy/adapt chỉ `build_topic_lesson_prompt` và `build_topic_verify_prompt` vào `app/pipeline/gemini_extract/prompts.py`. Không copy prompt chunk. |
+| `sgk_extract/prompts.py` | Prompt TOC Topic/Lesson và prompt verify topic start trong pipeline cũ | Có | Gián tiếp | AI-Extract hiện chỉ adapt Topic/Lesson prompt vào `app/pipeline/gemini_extract/prompts/topic_lesson_prompt.py`. Gemini verify offset không còn dùng trong default flow; offset hiện dùng OCR. Không copy prompt chunk. |
 | `sgk_extract/gemini_runner.py` | Gọi Gemini qua pool và parse JSON loose | Có | Không trực tiếp | Adapt parse JSON và runner cho PDF. Nên dùng Gemini client hiện có/được chuẩn hóa trong AI-Extract thay vì phụ thuộc backend lớn. |
 | `sgk_extract/gemini_client.py` | Upload PDF lên Gemini, generate_content, key rotation wrapper | Có | Không trực tiếp | Không copy nguyên nếu AI-Extract đã có `app/services/gemini/client.py`. Cần port phần `generate_with_pdf` hoặc tạo method tương đương. |
-| `sgk_extract/les_top_pipeline.py` | Tạo preview 20 trang, verify offset, standalone `run_extract_save_split` | Có | Gián tiếp | Adapt `_make_preview_first_pages`, `_make_single_page_pdf`, `verify_topics_and_get_offset`. Không cần `run_extract_save_split` nguyên nếu AI-Extract dùng service/job riêng. |
+| `sgk_extract/les_top_pipeline.py` | Tạo preview 20 trang, verify offset bằng Gemini, standalone `run_extract_save_split` trong pipeline cũ | Có | Gián tiếp | AI-Extract đã chuyển sang `front_matter.pdf` bằng `create_front_matter_pdf(...)` và OCR offset detection. Không port Gemini verify offset, `_make_single_page_pdf`, hoặc `run_extract_save_split` nguyên file. |
 | `sgk_extract/pdf_output.py` | Normalize manifest, flatten, split PDF, write metadata | Có | Có | Adapt tối thiểu `normalize_manifest`, `_flatten_start_printed_items`, `_flatten_list_items`, `split_pdf_by_ranges`; cân nhắc bỏ `prepare_workspace/save_manifest/split_from_manifest` nếu AI-Extract tự quản workspace. |
 | `scripts/light_extract_job.py` | Review-first orchestration theo stage topics/lessons/chunks | Có | Có | Không copy nguyên. Dùng làm blueprint để viết `topic_runner.py` và `lesson_runner.py` nhỏ trong AI-Extract. |
 | `scripts/connect.py` | Tạo KeyManager từ config/backend GeminiRotationPool | Có | Không trực tiếp | Không nên copy nguyên vì phụ thuộc `FastAPI-Khoa-Luan/app/services/infrastructure/gemini_client.py`. AI-Extract nên dùng config/client riêng. |
@@ -404,13 +404,14 @@ Mapping đề xuất:
 
 `app/pipeline/gemini_extract/topic_runner.py`
 
-- Nhận `pdf_path`, `job_output_dir`, model/config.
-- Tạo preview 20 trang.
-- Build prompt Topic/Lesson.
-- Gọi Gemini runner.
-- Verify offset.
-- Normalize manifest.
-- Trả về `topics`, `raw_lessons`, manifest/raw payload.
+- Nhận `pdf_path`, model/config, `offset`, `split_pdf`, `output_root`.
+- Tạo `topic/front_matter.pdf` từ các trang đầu sách, mặc định trang PDF 1..12.
+- Build prompt Topic/Lesson từ `app/pipeline/gemini_extract/prompts/topic_lesson_prompt.py`.
+- Gọi Gemini bằng AI-Extract `generate_with_pdf(...)`.
+- Fallback sang full PDF nếu front-matter extraction fail.
+- Detect offset bằng OCR bottom-crop cumulative voting, không dùng Gemini verify offset.
+- Normalize topics/lessons và split `original.pdf` vào `topic/doc/`, `lesson/doc/` nếu cần.
+- Trả về `topics`, `lessons`, raw payload, `offset_detection`, `split_result`.
 - Không tự xử lý HTTP.
 
 `app/pipeline/gemini_extract/lesson_runner.py`
@@ -421,31 +422,34 @@ Mapping đề xuất:
 - Không gọi Gemini nếu giữ đúng flow hiện tại.
 - Có thể không cắt PDF ở phiên bản đầu nếu AI-Extract chỉ cần JSON; nếu cần preview PDF sau này, port `_slice_pdf`, `_build_topic_pdfs`, `_build_lesson_pdfs`.
 
-`app/pipeline/gemini_extract/prompts.py`
+`app/pipeline/gemini_extract/prompts/`
 
-- Chứa `build_topic_lesson_prompt`.
-- Chứa `build_topic_verify_prompt`.
+- Package prompt hiện tại.
+- `topic_lesson_prompt.py` chứa `build_topic_lesson_prompt`.
+- Prompt hướng Gemini đọc TOC/front-matter pages và trả `start_printed`.
+- Không còn dùng `build_topic_verify_prompt` cho default offset detection.
 - Không đưa prompt chunk/keyword.
 
 `app/pipeline/gemini_extract/pdf_utils.py`
 
-- Chứa tạo preview PDF, single page PDF, normalize manifest, flatten item, split PDF nếu cần.
-- Cần giữ logic offset `start_printed + offset` và `printed_end_of_main - 1`.
+- Chứa `create_front_matter_pdf(...)`, đếm trang, split page range và split topic/lesson docs.
+- Final topic/lesson PDFs được cắt từ `original.pdf`, không từ `front_matter.pdf`.
+- Logic offset `start_printed + offset` nằm trong normalizer/parser hiện tại.
 
 `app/services/extraction/topic_service.py`
 
 - Điều phối job-level:
   - Lấy `workspace/uploads/{job_id}/original.pdf`.
   - Gọi `topic_runner`.
-  - Ghi `topics_raw.json`, `topics.json`, `raw_lessons.json` hoặc `extraction_state.json`.
+  - Ghi `topic/topic_raw.json`, `topic/topics.json`, `lesson/lesson_raw.json`.
   - Cập nhật `job.json` status `reviewing_topics`.
 
 `app/services/extraction/lesson_service.py`
 
 - Yêu cầu `topics_approved.json`.
-- Đọc `raw_lessons.json`.
-- Gọi `lesson_runner`.
-- Ghi `lessons_raw.json`, `lessons.json`.
+- Đọc `lesson/lesson_raw.json`.
+- Build reviewable lessons bằng range overlap giữa approved topics và raw lessons.
+- Ghi `lesson/lessons.json`.
 - Cập nhật `job.json` status `reviewing_lessons`.
 
 `app/services/storage/workspace_service.py`
@@ -454,7 +458,7 @@ Mapping đề xuất:
 - Ghi/đọc JSON.
 - Không chứa logic Gemini hoặc logic range.
 
-## 11. API review-first sau này sẽ dùng flow này như thế nào
+## 11. API review-first hiện tại trong AI-Extract dùng flow này như thế nào
 
 AI-Extract có thể hỗ trợ review-first không cần UI bằng JSON files và API calls.
 
@@ -465,11 +469,13 @@ AI-Extract có thể hỗ trợ review-first không cần UI bằng JSON files v
    - Đã có skeleton trong AI-Extract.
 
 2. `POST /api/extract/jobs/{job_id}/topics/extract`
-   - Dùng `original.pdf`.
-   - Chạy adapted `topic_runner`.
-   - Lưu `topics_raw.json`.
-   - Lưu editable `topics.json`.
-   - Lưu `raw_lessons.json` hoặc `extraction_state.json`.
+   - Tạo `topic/front_matter.pdf` từ `original.pdf`.
+   - Chạy real Gemini `topic_runner`.
+   - Gemini đọc front-matter PDF trước, full PDF chỉ fallback.
+   - OCR detect offset từ `original.pdf`.
+   - Lưu `topic/topic_raw.json`.
+   - Lưu editable `topic/topics.json`.
+   - Lưu `lesson/lesson_raw.json`.
    - Set `status = reviewing_topics`.
 
 3. `PUT /api/extract/jobs/{job_id}/topics`
@@ -477,14 +483,13 @@ AI-Extract có thể hỗ trợ review-first không cần UI bằng JSON files v
 
 4. `POST /api/extract/jobs/{job_id}/topics/approve`
    - Copy hoặc validate `topics.json`.
-   - Ghi `topics_approved.json`.
+   - Ghi `topic/topics_approved.json`.
 
-5. `POST /api/extract/jobs/{job_id}/lessons/extract`
-   - Require `topics_approved.json`.
-   - Require `raw_lessons.json` từ Topic stage.
-   - Chạy adapted `lesson_runner`.
-   - Lưu `lessons_raw.json`.
-   - Lưu editable `lessons.json`.
+5. `POST /api/extract/jobs/{job_id}/lessons/build`
+   - Require `topic/topics_approved.json`.
+   - Require `lesson/lesson_raw.json` từ Topic stage.
+   - Build reviewable lessons bằng range overlap; không gọi Gemini.
+   - Lưu editable `lesson/lessons.json`.
    - Set `status = reviewing_lessons`.
 
 Điểm quan trọng: Lesson stage của pipeline cũ không phải một Gemini extraction độc lập. Nó là bước tổng hợp từ `raw_lessons` và `approved_topics`.
@@ -505,22 +510,19 @@ AI-Extract có thể hỗ trợ review-first không cần UI bằng JSON files v
 
 ## 13. Kết luận đề xuất cho bước tiếp theo
 
-Đề xuất thứ tự triển khai trong AI-Extract:
+Đề xuất hiện tại cho AI-Extract:
 
-1. Giữ job/storage skeleton hiện có.
-2. Implement API review-first cho topics bằng stub trước:
-   - extract topics.
-   - edit topics.
-   - approve topics.
-3. Adapt real `topic_runner` từ logic `_run_topics`, nhưng bỏ MongoDB/subprocess/heavy-stage.
-4. Lưu `raw_lessons` rõ ràng thành `raw_lessons.json`.
-5. Implement lesson extraction từ `topics_approved.json` + `raw_lessons.json`.
-6. Chỉ sau khi Topic/Lesson JSON ổn định mới cân nhắc PDF preview/cut bundle nếu cần.
+1. Tiếp tục test real Topic API trên nhiều PDF sách thật.
+2. Giữ `front_matter.pdf` làm Gemini input chính, full PDF chỉ fallback.
+3. Giữ OCR offset detection làm default, không khôi phục Gemini verify offset.
+4. Lưu raw lessons rõ ràng thành `lesson/lesson_raw.json`.
+5. Lesson review hiện build từ `topic/topics_approved.json` + `lesson/lesson_raw.json` qua `/lessons/build`.
+6. Chunk extraction nếu bổ sung sau này nên chạy trên `lesson/doc/*.pdf`, không chạy trên `front_matter.pdf`.
 
 Rủi ro khi adapt:
 
 - `sgk_extract/gemini_client.py` và `scripts/connect.py` phụ thuộc `FastAPI-Khoa-Luan/app/services/infrastructure/gemini_client.py`; không thể copy nguyên mà không kéo theo backend lớn.
-- Topic stage gọi Gemini nhiều lần: một lần cho preview mục lục và nhiều lần verify offset từng topic. Cần quản lý rate limit/key rotation.
+- Pipeline cũ từng gọi Gemini nhiều lần cho preview mục lục và verify offset từng topic. AI-Extract hiện không dùng Gemini verify offset; Gemini chỉ dùng cho structure extraction, còn offset dùng OCR.
 - Lesson stage phụ thuộc `raw_lessons` sinh ra ở Topic stage; nếu không lưu field này trong AI-Extract thì không thể tái tạo đúng flow cũ.
 - Logic normalize dựa mạnh vào mục lục có `Chủ đề <SỐ>.`, `Bài <SỐ>.` và `printed_end_of_main`; sách format khác có thể cần test riêng.
 - Pipeline cũ vừa tạo JSON vừa cắt PDF/bundle. AI-Extract nên tách mục tiêu: JSON trước, PDF preview sau nếu thật sự cần.

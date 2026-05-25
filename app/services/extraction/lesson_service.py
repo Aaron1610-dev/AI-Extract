@@ -31,7 +31,7 @@ class LessonsAlreadyApprovedError(RuntimeError):
 def _read_topics_approved_or_409(job_id: str) -> list[TopicItem]:
     topics_path = get_topics_approved_json_path(job_id)
     if not topics_path.exists():
-        raise LessonPrerequisiteError("Topics must be approved before extracting lessons.")
+        raise LessonPrerequisiteError("Topics must be approved before building lessons.")
 
     topics = read_json(topics_path)
     if not isinstance(topics, list):
@@ -118,7 +118,7 @@ def _build_lessons_from_ranges(
     return lessons
 
 
-def extract_lessons_from_approved_topics(job_id: str) -> LessonExtractionResponse:
+def build_lessons_from_approved_topics(job_id: str) -> LessonExtractionResponse:
     get_job(job_id)
 
     original_pdf_path = get_original_pdf_path(job_id)

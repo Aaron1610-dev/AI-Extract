@@ -13,7 +13,7 @@ from app.services.extraction.lesson_service import (
     LessonPrerequisiteError,
     LessonsAlreadyApprovedError,
     approve_lessons,
-    extract_lessons_from_approved_topics,
+    build_lessons_from_approved_topics,
     get_lessons,
     update_lessons,
 )
@@ -22,10 +22,10 @@ from app.services.extraction.lesson_service import (
 router = APIRouter(prefix="/api/extract/jobs", tags=["extract-lessons"])
 
 
-@router.post("/{job_id}/lessons/extract", response_model=LessonExtractionResponse)
-def extract_job_lessons(job_id: str) -> LessonExtractionResponse:
+@router.post("/{job_id}/lessons/build", response_model=LessonExtractionResponse)
+def build_job_lessons(job_id: str) -> LessonExtractionResponse:
     try:
-        return extract_lessons_from_approved_topics(job_id)
+        return build_lessons_from_approved_topics(job_id)
 
     except LessonPrerequisiteError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -36,7 +36,7 @@ def extract_job_lessons(job_id: str) -> LessonExtractionResponse:
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to extract lessons: {exc}",
+            detail=f"Failed to build lessons: {exc}",
         ) from exc
 
 

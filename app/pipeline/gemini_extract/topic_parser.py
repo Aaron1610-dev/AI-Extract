@@ -61,32 +61,53 @@ def normalize_topic_lesson_payload(
     if not isinstance(lessons_raw, list):
         lessons_raw = []
 
+    topics = [
+        _normalize_item(item, prefix="topic", index=index)
+        for index, item in enumerate(topics_raw, start=1)
+        if isinstance(item, dict)
+    ]
+    lessons = [
+        _normalize_item(item, prefix="lesson", index=index)
+        for index, item in enumerate(lessons_raw, start=1)
+        if isinstance(item, dict)
+    ]
+
+    topics, lessons = fill_end_printed_from_starts(
+        topics=topics,
+        lessons=lessons,
+        printed_end_of_main=_to_int(payload.get("printed_end_of_main")),
+    )
+
+    if offset is not None:
+        topics = [
+            _apply_offset(item, offset=offset, total_pdf_pages=total_pdf_pages)
+            for item in topics
+        ]
+        lessons = [
+            _apply_offset(item, offset=offset, total_pdf_pages=total_pdf_pages)
+            for item in lessons
+        ]
+    else:
+        topics = [_clamp_existing_range(item, total_pdf_pages) for item in topics]
+        lessons = [_clamp_existing_range(item, total_pdf_pages) for item in lessons]
+
     return {
-        "topics": [
-            _normalize_item(
-                item,
-                prefix="topic",
-                index=index,
-                total_pdf_pages=total_pdf_pages,
-                offset=offset,
-            )
-            for index, item in enumerate(topics_raw, start=1)
-            if isinstance(item, dict)
-        ],
-        "lessons": [
-            _normalize_item(
-                item,
-                prefix="lesson",
-                index=index,
-                total_pdf_pages=total_pdf_pages,
-                offset=offset,
-            )
-            for index, item in enumerate(lessons_raw, start=1)
-            if isinstance(item, dict)
-        ],
+        "topics": topics,
+        "lessons": lessons,
         "raw_payload": payload,
         "offset": offset,
     }
+
+
+def fill_end_printed_from_starts(
+    topics: list[dict],
+    lessons: list[dict],
+    printed_end_of_main: int | None = None,
+) -> tuple[list[dict], list[dict]]:
+    return (
+        _fill_group_end_printed(topics, printed_end_of_main),
+        _fill_group_end_printed(lessons, printed_end_of_main),
+    )
 
 
 def _extract_first_json_object(text: str) -> str | None:
@@ -128,8 +149,6 @@ def _normalize_item(
     *,
     prefix: str,
     index: int,
-    total_pdf_pages: int | None,
-    offset: int | None,
 ) -> dict:
     name = _clean_string(item.get("name")) or f"{prefix}_{index:02d}"
     heading = _clean_string(item.get("heading"))
@@ -144,20 +163,11 @@ def _normalize_item(
     start = _to_int(item.get("start"))
     end = _to_int(item.get("end"))
 
-    if start is None and start_printed is not None and offset is not None:
-        start = start_printed + offset
-
-    if end is None and end_printed is not None and offset is not None:
-        end = end_printed + offset
-
     if end is None and start is not None:
         end = start
 
     if start is None and end is not None:
         start = end
-
-    if start is not None and end is not None:
-        start, end = _normalize_range(start, end, total_pdf_pages)
 
     normalized = {
         "name": name,
@@ -170,6 +180,68 @@ def _normalize_item(
     }
 
     return normalized
+
+
+def _fill_group_end_printed(
+    items: list[dict],
+    printed_end_of_main: int | None,
+) -> list[dict]:
+    sortable = [item for item in items if item.get("start_printed") is not None]
+    unsorted = [item for item in items if item.get("start_printed") is None]
+
+    sortable.sort(key=lambda item: int(item["start_printed"]))
+
+    for index, item in enumerate(sortable):
+        if index + 1 < len(sortable):
+            item["end_printed"] = int(sortable[index + 1]["start_printed"]) - 1
+        elif printed_end_of_main is not None:
+            item["end_printed"] = printed_end_of_main
+        elif item.get("end_printed") is None:
+            item["end_printed"] = item.get("start_printed")
+
+    for item in unsorted:
+        if item.get("end_printed") is None:
+            item["end_printed"] = item.get("start_printed")
+
+    return sortable + unsorted
+
+
+def _apply_offset(
+    item: dict,
+    *,
+    offset: int,
+    total_pdf_pages: int | None,
+) -> dict:
+    out = dict(item)
+
+    if out.get("start_printed") is not None:
+        out["start"] = int(out["start_printed"]) + offset
+
+    if out.get("end_printed") is not None:
+        out["end"] = int(out["end_printed"]) + offset
+
+    if out.get("end") is None and out.get("start") is not None:
+        out["end"] = out["start"]
+
+    if out.get("start") is None and out.get("end") is not None:
+        out["start"] = out["end"]
+
+    return _clamp_existing_range(out, total_pdf_pages)
+
+
+def _clamp_existing_range(item: dict, total_pdf_pages: int | None) -> dict:
+    out = dict(item)
+    start = out.get("start")
+    end = out.get("end")
+
+    if start is not None and end is not None:
+        out["start"], out["end"] = _normalize_range(
+            int(start),
+            int(end),
+            total_pdf_pages,
+        )
+
+    return out
 
 
 def _clean_string(value: Any) -> str | None:

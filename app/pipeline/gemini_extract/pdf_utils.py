@@ -68,6 +68,20 @@ def split_pdf_range(
     return output_path
 
 
+def create_front_matter_pdf(
+    source_pdf: str | Path,
+    output_pdf: str | Path,
+    start_page: int = 1,
+    end_page: int = 12,
+) -> Path:
+    return split_pdf_range(
+        source_pdf=source_pdf,
+        output_pdf=output_pdf,
+        start_page=start_page,
+        end_page=end_page,
+    )
+
+
 def split_topics_and_lessons(
     source_pdf: str | Path,
     output_root: str | Path,

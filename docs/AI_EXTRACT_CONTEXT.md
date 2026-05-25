@@ -1,361 +1,50 @@
 # AI-Extract - Context dự án
 
-## 1. Tổng quan dự án
-
-AI-Extract là một dịch vụ FastAPI nhẹ dùng cho bài toán trích xuất thông tin từ file PDF sách giáo khoa.
-
-Mục tiêu của repository này là tách riêng phần extraction cần thiết khỏi backend luận văn lớn hơn. AI-Extract chỉ tập trung cung cấp API đơn giản để nhận PDF, chạy logic trích xuất, trả JSON và lưu kết quả ra thư mục workspace/outputs.
-
-Tại thời điểm tạo tài liệu này, repository hiện có:
-
-- `README.md`: đang trống.
-- `requirements.txt`: khai báo FastAPI, Uvicorn, Pydantic, python-dotenv và các dependency nền tảng.
-- `app/main.py`: entry FastAPI hiện tại, đang include các router health, debug và keywords.
-- `run.py`: chạy Uvicorn với `app.main:app`.
-- `app/api/routes/`: có `health.py`, `debug.py`, `keywords.py`.
-- `app/services/gemini/`: có service hiện tại cho Gemini keyword và hạ tầng Gemini client.
-- `app/services/extraction/`, `app/services/storage/`, `app/pipeline/gemini_extract/`: đã được tạo sẵn cho extraction sau này, hiện chỉ là placeholder.
-- `app/schemas/`: có schema keyword, schema extraction job và placeholder schema common.
-- `app/utils/`: có utility JSON/text hiện dùng bởi keyword service và placeholder filename utility.
-- `app/core/config.py`: đọc cấu hình từ `app/core/config.env`.
-- `app/core/paths.py`: khai báo base path cho app/workspace.
-- `app/core/config.env`: có cấu hình ứng dụng và Gemini. Không nên hard-code hoặc lan truyền secret trong tài liệu/code mới.
-
-Các phần extraction Topic/Lesson từ PDF chưa được triển khai trong repository này.
-
-## 2. Quan hệ với FastAPI-Khoa-Luan / gemini_pipeline
-
-Có một workspace/repository khác tên là `FastAPI-Khoa-Luan`. Repository đó là hệ thống luận văn lớn hơn và có thư mục `gemini_pipeline`.
-
-Trong hệ thống lớn, `gemini_pipeline` được dùng để xử lý PDF sách giáo khoa, trích xuất topic/lesson/chunk, tạo artifact trên disk, tạo review workspace, và sau đó backend chính import/sync dữ liệu vào MongoDB, PostgreSQL, Neo4j và MinIO.
-
-Đối với AI-Extract, chỉ reuse hoặc adapt phần tối thiểu cần thiết cho:
-
-- Trích xuất Topic từ PDF.
-- Trích xuất Lesson từ PDF và/hoặc từ kết quả Topic đã trích xuất.
-- Trả kết quả JSON qua API.
-- Lưu kết quả JSON xuống workspace/outputs.
-
-AI-Extract không chịu trách nhiệm database sync, import nặng, review workspace, hoặc các stage phụ trợ của backend luận văn đầy đủ.
-
-## 3. Phạm vi đơn giản hiện tại
-
-Phạm vi hiện tại của AI-Extract:
-
-- Upload file PDF sách giáo khoa.
-- Trích xuất Topic.
-- Trích xuất Lesson.
-- Trả JSON response từ API.
-- Lưu JSON output ra disk.
-- Chỉ cung cấp API FastAPI, không có UI.
-
-Các endpoint extraction thực tế chưa được triển khai tại thời điểm tạo tài liệu này.
-
-## 4. Ngoài phạm vi hiện tại
-
-Các chức năng sau chưa thuộc phạm vi AI-Extract ở giai đoạn này:
-
-- Chunk extraction.
-- Review UI hoặc màn hình duyệt/chỉnh sửa kết quả.
-- Kaggle OCR/cutline.
-- Keyword extraction cho pipeline PDF mới, trừ khi sau này có yêu cầu tích hợp rõ ràng.
-- MongoDB.
-- PostgreSQL.
-- Neo4j.
-- MinIO.
-- Import/sync heavy-stage từ artifact vào database/object storage.
-- Authentication/authorization, trừ khi được bổ sung ở giai đoạn sau.
-
-## 5. Output file dự kiến
-
-Kết quả extraction dự kiến được lưu dưới dạng JSON trong workspace/outputs.
-
-Tên file dự kiến:
-
-- `topics.json`: chứa danh sách topic đã trích xuất.
-- `lessons.json`: chứa danh sách lesson đã trích xuất.
-
-Quy ước thư mục dự kiến:
-
-- `workspace/outputs/`
-
-Tên file, cấu trúc thư mục con, và format JSON chính xác cần theo implementation thực tế ở bước triển khai sau. Nếu có nhiều job hoặc nhiều PDF cùng lúc, cần quyết định thêm cách đặt `job_id`, folder theo job, hoặc tên file theo tài liệu.
-
-## 6. Hành vi API dự kiến
-
-Các endpoint job đã được implement ở mức skeleton. Các endpoint Topic/Lesson bên dưới vẫn là định hướng dự kiến, chưa khẳng định đã được triển khai.
-
-### `POST /api/extract/jobs`
-
-Trạng thái: đã implement skeleton file-based ở Step 1.
-
-Mục tiêu:
-
-- Nhận PDF upload qua `multipart/form-data`, field `file`.
-- Validate filename có đuôi `.pdf`.
-- Tạo `job_id` bằng UUID.
-- Tạo workspace theo job.
-- Lưu PDF gốc và metadata job.
-- Trả metadata job.
-
-File được tạo:
-
-- `workspace/uploads/{job_id}/original.pdf`
-- `workspace/outputs/{job_id}/job.json`
-
-Status ban đầu:
-
-- `uploaded`
-
-### `GET /api/extract/jobs/{job_id}`
-
-Trạng thái: đã implement skeleton file-based ở Step 1.
-
-Mục tiêu:
-
-- Đọc `workspace/outputs/{job_id}/job.json`.
-- Trả metadata job.
-- Nếu không tìm thấy job, trả `404`.
-
-### `POST /api/extract/topics`
-
-Mục tiêu:
-
-- Nhận một file PDF.
-- Chạy topic extraction.
-- Trả JSON chứa danh sách topic.
-- Lưu kết quả ra file JSON, dự kiến là `topics.json` trong workspace/outputs hoặc thư mục job tương ứng.
-
-Request dự kiến:
-
-- `multipart/form-data`.
-- Field file PDF: Cần kiểm tra trong bước triển khai.
-
-Response dự kiến:
-
-- JSON chứa danh sách topics.
-- Có thể kèm metadata như tên file, output path, model, thời gian xử lý hoặc `job_id` nếu cần.
-
-### `POST /api/extract/lessons`
-
-Mục tiêu:
-
-- Nhận một file PDF và/hoặc sử dụng `topics.json` đã trích xuất trước đó.
-- Chạy lesson extraction.
-- Trả JSON chứa danh sách lessons.
-- Lưu kết quả ra file JSON, dự kiến là `lessons.json` trong workspace/outputs hoặc thư mục job tương ứng.
-
-Request dự kiến:
-
-- Có thể là `multipart/form-data` với PDF.
-- Có thể nhận thêm `topics.json`, `job_id`, hoặc đường dẫn output từ bước topic extraction.
-- Cách truyền dữ liệu chính xác: Chưa xác định.
-
-Response dự kiến:
-
-- JSON chứa danh sách lessons.
-- Có thể kèm metadata như tên file, topic source, output path, model, thời gian xử lý hoặc `job_id` nếu cần.
-
-### Topic review endpoints theo job
-
-Trạng thái: `POST /api/extract/jobs/{job_id}/topics/extract` đã gọi Gemini trực tiếp qua `run_topic_extraction(...)`. Các endpoint review/edit/approve vẫn giữ review-first flow.
-
-Endpoint đã có:
-
-- `POST /api/extract/jobs/{job_id}/topics/extract`
-- `GET /api/extract/jobs/{job_id}/topics`
-- `PUT /api/extract/jobs/{job_id}/topics`
-- `POST /api/extract/jobs/{job_id}/topics/approve`
-
-File được tạo hoặc cập nhật:
-
-- `workspace/outputs/{job_id}/topic/topic_raw.json`
-- `workspace/outputs/{job_id}/topic/topics.json`
-- `workspace/outputs/{job_id}/topic/topics_approved.json`
-- `workspace/outputs/{job_id}/lesson/lesson_raw.json`
-- `workspace/outputs/{job_id}/topic/doc/*.pdf` nếu `split_pdf=true`
-- `workspace/outputs/{job_id}/lesson/doc/*.pdf` nếu `split_pdf=true`
-
-`lesson/lesson_raw.json` được lưu ngay ở Topic stage vì pipeline cũ trong `FastAPI-Khoa-Luan/gemini_pipeline` trả về cả topics và lessons ở Topic stage. Lesson stage sau này cần `topic/topics_approved.json` cộng với `lesson/lesson_raw.json`.
-
-## 7. Quy tắc phát triển
-
-- Giữ implementation đơn giản, API-only.
-- Không copy toàn bộ heavy-stage pipeline từ `gemini_pipeline`.
-- Không đưa database dependency vào AI-Extract ở giai đoạn này.
-- Không thêm UI.
-- Giữ cấu trúc project hiện có khi có thể.
-- Ưu tiên các file nhỏ, rõ trách nhiệm:
-  - router cho endpoint.
-  - service cho logic extraction.
-  - schema/model cho request/response.
-  - config cho đường dẫn workspace/outputs và model/API settings.
-- Khi adapt code từ `gemini_pipeline`, chỉ mang sang các file tối thiểu cần cho Topic và Lesson extraction.
-- Không refactor các phần keyword/Gemini hiện có nếu không cần cho extraction API.
-- Không hard-code secret. Cấu hình nhạy cảm phải đi qua env/config phù hợp.
-
-## 8. Change Log / Context Updates
-
-### 2026-05-25
-
-- Tạo file context ban đầu cho hướng phát triển đơn giản: PDF -> Topic/Lesson JSON API.
-- Ghi nhận AI-Extract là service FastAPI nhẹ, tách khỏi backend luận văn đầy đủ.
-- Xác định phạm vi hiện tại chỉ gồm upload PDF, trích xuất Topic/Lesson, trả JSON và lưu output JSON.
-- Ghi rõ các phần ngoài phạm vi: chunk extraction, review UI, Kaggle OCR/cutline, keyword extraction pipeline mới, database/object storage và heavy import/sync.
-- Bổ sung kế hoạch kiến trúc code sạch cho Topic/Lesson extraction.
-- Quyết định dùng workspace folder theo `job_id` để tránh ghi đè output khi xử lý nhiều sách.
-- Định hướng tạo layer riêng `app/pipeline/gemini_extract/` để chứa code tối thiểu adapt từ `gemini_pipeline`, tránh trộn logic pipeline với FastAPI service.
-- Refactor cấu trúc source code thành các layer rõ hơn: route, schema, service, storage, pipeline và utils.
-- Giữ nguyên các API hiện có: health, debug và keyword.
-- Tạo sẵn các folder tương lai cho review-first extraction.
-- Tạo folder nền `workspace/uploads` và `workspace/outputs`.
-- Chưa implement logic Topic/Lesson extraction.
-- Implement skeleton extraction job file-based.
-- Thêm API tạo job upload PDF: `POST /api/extract/jobs`.
-- Thêm API đọc metadata job: `GET /api/extract/jobs/{job_id}`.
-- Tạo `job.json` trong `workspace/outputs/{job_id}` khi upload PDF.
-- Chuẩn hóa tên storage helper là `workspace_service.py`.
-- Đã thay Topic review API từ stub sang real Gemini extraction ở bước sau.
-- Thêm quy ước file topic review ban đầu, hiện đã refactor vào `topic/` và `lesson/`.
-- Chưa implement Gemini Topic extraction thật.
-- Chưa implement Lesson extraction.
-- Implement Lesson review API dùng approved topics và raw lessons.
-- Thêm quy ước file lesson review ban đầu, hiện đã refactor vào `lesson/`.
-- Chưa implement Gemini Lesson extraction thật.
-- Chưa copy `gemini_pipeline`.
-- Refactor review output files vào subfolder `topic/` và `lesson/`.
-- Đổi raw output của Topic stage thành `topic/topic_raw.json`.
-- Chuyển raw lesson source sang `lesson/lesson_raw.json`.
-- Đổi field trong Topic raw payload từ `raw_lessons` thành `lessons`.
-- Bỏ quy ước `lessons_raw.json` riêng; `lesson/lesson_raw.json` là nguồn raw lesson từ Topic stage.
-- Giữ nguyên public API behavior.
-- Bổ sung kế hoạch inspect AI-Extract Gemini client trước khi adapt real Topic extraction.
-- Thêm hàm Gemini PDF-capable `generate_with_pdf(...)` cho Topic extraction sau này.
-- Giữ nguyên behavior text-only Gemini hiện dùng bởi keyword APIs.
-- Real Topic extraction đã được wire vào Topic API ở bước sau.
-- Thêm minimal Topic/Lesson prompt cho Gemini PDF extraction sau này.
-- Thêm parser/normalizer cho Gemini JSON response.
-- Thêm PDF page utilities và range split helpers.
-- Thêm dependency `pypdf`.
-- Chuẩn hóa future split PDF folders là `topic/doc/` và `lesson/doc/`.
-- Preview PDF creation cố ý defer cho module/người triển khai khác.
-- Thêm manually callable real `topic_runner.py` cho test thủ công.
-- Runner có thể gọi Gemini PDF extraction và normalize topics/lessons.
-- Runner hiện đã wire vào Topic API.
-- Adapt automatic offset detection từ `FastAPI-Khoa-Luan/gemini_pipeline`.
-- Thêm `offset_detector.py` dùng OCR bottom-crop cumulative voting.
-- Auto offset detection hiện được dùng trong real Topic API thông qua `topic_runner.py`.
-- Thay Gemini verify offset detection bằng OCR bottom-crop cumulative voting.
-- Thêm offset detection dựa trên Tesseract/PyMuPDF/Pillow/Numpy/OpenCV.
-- `offset=auto` không gọi Gemini verify theo default path.
-- Gemini vẫn được dùng cho main Topic/Lesson structure extraction từ full PDF.
-- Thay public Topic stub extraction bằng real Gemini `topic_runner`.
-- Topic extraction API hiện gọi Gemini trực tiếp.
-- `offset=auto` là mặc định cho Topic extract API.
-- `split_pdf=true` là mặc định cho Topic extract API.
-- Xóa public stub behavior khỏi Topic extract API; không có engine switch.
-- Chưa implement Gemini Lesson extraction.
-- Xóa các Gemini API key không còn dùng được khỏi local active config.
-- Giữ lại các key chỉ bị temporary cooldown vì có thể dùng lại sau.
-- Reset local Gemini rotation state sau khi cleanup key.
-- Lưu ý: key bị `reported-as-leaked`, suspended, invalid hoặc expired cần được revoke/delete trong Google AI Studio hoặc Google Cloud, không chỉ xóa khỏi local config.
-- Không thay đổi API behavior.
-
-Các phiên Codex sau cần cập nhật section này khi kiến trúc, phạm vi, endpoint, cấu trúc output hoặc dependency chính thay đổi.
-
-## 9. Câu hỏi mở / bước triển khai tiếp theo
-
-- Kiểm tra trong `FastAPI-Khoa-Luan/gemini_pipeline` để xác định file nào cần copy/adapt cho Topic extraction.
-- Kiểm tra trong `FastAPI-Khoa-Luan/gemini_pipeline` để xác định file nào cần copy/adapt cho Lesson extraction.
-- Hoàn thiện cấu trúc chi tiết bên trong `workspace/uploads/{job_id}` và `workspace/outputs/{job_id}` khi triển khai.
-- Quyết định có dùng `job_id` hay không.
-- Quyết định lesson extraction nhận input là:
-  - PDF gốc cộng với `topics.json`.
-  - `job_id` tham chiếu output đã có.
-  - Hoặc một cơ chế khác.
-- Thiết kế schema JSON tối thiểu cho Topic.
-- Thiết kế schema JSON tối thiểu cho Lesson.
-- Implement FastAPI endpoint `POST /api/extract/topics`.
-- Implement FastAPI endpoint `POST /api/extract/lessons`.
-- Thêm hướng dẫn test thủ công cơ bản bằng `curl` hoặc Swagger UI.
-
-## 10. Kiến trúc code đề xuất cho Topic/Lesson extraction
-
-Kiến trúc đề xuất nên giữ rõ ranh giới giữa FastAPI route, service orchestration, file storage và code pipeline adapt từ `FastAPI-Khoa-Luan/gemini_pipeline`.
-
-### Cấu trúc file đề xuất
-
-`app/api/routes/extract.py`
-
-- Chứa các FastAPI endpoint extraction.
-- Endpoint dự kiến:
-  - `POST /api/extract/topics`
-  - `POST /api/extract/lessons`
-- Chỉ nên xử lý HTTP layer: nhận request, validate input cơ bản, gọi service, trả response hoặc map lỗi sang HTTP error.
-- Không đặt logic đọc PDF, prompt Gemini, hoặc xử lý pipeline trực tiếp trong router.
-
-`app/schemas/extraction.py`
-
-- Chứa request/response schema cho extraction API.
-- Model dự kiến:
-  - `TopicItem`
-  - `LessonItem`
-  - `TopicExtractionResponse`
-  - `LessonExtractionResponse`
-- Field chi tiết của `TopicItem` và `LessonItem`: Cần kiểm tra trong bước triển khai theo output thực tế từ `gemini_pipeline`.
-- Response nên có tối thiểu `job_id`, danh sách kết quả, và đường dẫn output JSON nếu phù hợp.
-
-`app/services/storage/workspace_service.py`
-
-- Chịu trách nhiệm tạo workspace folder theo `job_id`.
-- Lưu PDF upload vào đúng vị trí.
-- Ghi JSON output ra disk.
-- Đọc lại `topic/topics.json` hoặc `topic/topics_approved.json` khi lesson extraction cần dùng topic đã có.
-- Không chứa logic trích xuất bằng Gemini.
-
-`app/services/extraction/topic_service.py`
-
-- Chịu trách nhiệm orchestration cho Topic API.
-- Flow chính: nhận PDF upload/path, gọi file storage để lưu file, gọi `topic_runner`, lưu `topic/topics.json`, trả dữ liệu về router.
-- Không chứa code pipeline chi tiết nếu code đó có thể đặt trong `app/pipeline/gemini_extract/`.
-
-`app/services/extraction/lesson_service.py`
-
-- Chịu trách nhiệm orchestration cho Lesson API.
-- Flow chính: xác định input lesson extraction, lấy PDF/topics source, gọi `lesson_runner`, lưu `lesson/lessons.json`, trả dữ liệu về router.
-- Cần hỗ trợ thiết kế cuối cùng: nhận `job_id`, nhận PDF mới, hoặc nhận PDF kèm topics source.
-
-`app/pipeline/gemini_extract/`
-
-- Layer riêng cho code tối thiểu adapt từ `FastAPI-Khoa-Luan/gemini_pipeline`.
-- Không copy toàn bộ pipeline lớn.
-- File đề xuất:
-  - `topic_runner.py`: chạy phần trích xuất topic.
-  - `lesson_runner.py`: chạy phần trích xuất lesson.
-  - `pdf_utils.py`: utility PDF tối thiểu cần cho Topic/Lesson.
-  - `prompts.py`: prompt tối thiểu cho Topic/Lesson.
-- Layer này không nên import FastAPI router. Nếu cần config, nhận qua tham số hoặc đọc từ config service đơn giản.
-
-### Workspace theo `job_id`
-
-Nên dùng `job_id` để tránh ghi đè file khi xử lý nhiều sách hoặc nhiều request cùng lúc.
-
-Cấu trúc dự kiến:
+## 1. Tổng quan hiện tại
+
+AI-Extract là dịch vụ FastAPI nhẹ để xử lý PDF sách giáo khoa theo workflow review-first:
+
+1. Upload PDF và tạo `job_id`.
+2. Dùng Gemini để trích xuất cấu trúc Topic/Lesson từ trang mục lục hoặc phần đầu sách.
+3. Tính range trang in, detect offset bằng OCR, rồi normalize sang trang PDF thật.
+4. Cắt `original.pdf` thành PDF theo topic/lesson.
+5. Cho phép review/chỉnh sửa JSON bằng API.
+6. Approve topics trước, sau đó build và approve lessons.
+
+AI-Extract được tách khỏi backend luận văn đầy đủ trong `FastAPI-Khoa-Luan`. Repository này không phụ trách database sync, UI review, chunk extraction, Kaggle OCR/cutline, MinIO, MongoDB, PostgreSQL, Neo4j hoặc heavy import/sync.
+
+## 2. Kiến trúc source code
+
+- `app/main.py`: FastAPI entry, include các route health/debug/keyword/extraction.
+- `app/api/routes/`: HTTP route layer.
+- `app/services/gemini/`: Gemini client, key rotation và keyword service hiện có.
+- `app/services/extraction/`: orchestration theo job cho topic, lesson và status.
+- `app/services/storage/workspace_service.py`: quản lý workspace theo `job_id`, path và JSON I/O.
+- `app/pipeline/gemini_extract/`: helper pipeline cho Topic/Lesson extraction.
+- `app/pipeline/gemini_extract/prompts/`: prompt package cho Gemini extraction.
+- `workspace/uploads/`: PDF upload theo job.
+- `workspace/outputs/`: artifact JSON/PDF theo job.
+
+## 3. Workspace output hiện tại
 
 ```text
 workspace/
   uploads/
     {job_id}/
       original.pdf
+
   outputs/
     {job_id}/
       job.json
+
       topic/
+        front_matter.pdf
         topic_raw.json
         topics.json
         topics_approved.json
         doc/
           topic_01.pdf
+
       lesson/
         lesson_raw.json
         lessons.json
@@ -364,332 +53,330 @@ workspace/
           lesson_01.pdf
 ```
 
-Quy ước:
+`front_matter.pdf` chỉ là input nhỏ cho Gemini đọc mục lục/phần đầu sách. Các file trong `topic/doc/` và `lesson/doc/` được cắt từ `original.pdf`, không cắt từ `front_matter.pdf`.
 
-- `workspace/uploads/{job_id}/original.pdf`: file PDF gốc đã upload.
-- `workspace/outputs/{job_id}/topic/topics.json`: editable topic review output.
-- `workspace/outputs/{job_id}/lesson/lessons.json`: editable lesson review output.
-- `workspace/outputs/{job_id}/topic/doc/`: future folder cho PDF topic được cắt.
-- `workspace/outputs/{job_id}/lesson/doc/`: future folder cho PDF lesson được cắt.
-- Cách sinh `job_id`: Cần kiểm tra trong bước triển khai, nhưng nên dùng giá trị unique như UUID.
-- Nếu API nhận `job_id`, service phải kiểm tra folder/file tương ứng có tồn tại trước khi chạy bước tiếp theo.
+## 4. API hiện tại
 
-### Flow dự kiến
-
-Topic API:
-
-1. Client gọi `POST /api/extract/topics` với PDF.
-2. Router validate file upload ở mức cơ bản.
-3. `topic_extraction_service` tạo hoặc nhận `job_id`.
-4. `workspace_service` lưu PDF vào `workspace/uploads/{job_id}/original.pdf`.
-5. Service gọi `app/pipeline/gemini_extract/topic_runner.py`.
-6. Service lưu kết quả vào `workspace/outputs/{job_id}/topic/topics.json`.
-7. API trả JSON chứa `job_id` và mảng topics.
-
-Lesson API:
-
-1. Client gọi `POST /api/extract/lessons`.
-2. API nhận `job_id` hoặc PDF + nguồn topics, tùy thiết kế cuối cùng.
-3. `lesson_extraction_service` xác định PDF và topics source.
-4. Service gọi `app/pipeline/gemini_extract/lesson_runner.py`.
-5. Service lưu kết quả vào `workspace/outputs/{job_id}/lesson/lessons.json`.
-6. API trả JSON chứa `job_id` và mảng lessons.
-
-### Nguyên tắc tách lớp
-
-- Router chỉ biết HTTP request/response.
-- Service điều phối workflow, không chứa chi tiết pipeline nặng.
-- File storage xử lý đường dẫn, folder, upload và JSON disk I/O.
-- Pipeline layer chứa logic adapt tối thiểu từ `gemini_pipeline`.
-- Không thêm database, UI, chunk extraction, Kaggle OCR/cutline, MinIO, MongoDB, PostgreSQL hoặc Neo4j.
-- Không refactor keyword APIs hiện có nếu không cần cho Topic/Lesson extraction.
-
-## 11. Cấu trúc source code sau khi refactor
-
-Source code đã được refactor để chuẩn bị cho hướng review-first PDF Topic/Lesson extraction, nhưng chưa implement logic extraction.
-
-### Route layer
-
-`app/api/routes/` là HTTP route layer.
-
-Hiện có:
-
-- `app/api/routes/health.py`: giữ endpoint health hiện có.
-- `app/api/routes/debug.py`: giữ endpoint debug Gemini key hiện có.
-- `app/api/routes/keywords.py`: giữ các endpoint keyword hiện có.
-- `app/api/routes/extract_jobs.py`: chứa skeleton endpoint tạo/đọc extraction job.
-- `app/api/routes/extract_topics.py`: chứa Topic review endpoints; extract endpoint gọi real Gemini runner.
-- `app/api/routes/extract_lessons.py`: chứa Lesson review endpoints dùng range-overlap từ approved topics và raw lessons.
-
-`app/main.py` import router từ `app.api.routes.*`. Public endpoint hiện có không đổi.
-
-### Schema layer
-
-`app/schemas/` chứa Pydantic schema.
-
-Hiện có:
-
-- `app/schemas/keyword.py`: schema cho keyword API hiện có, được move từ schema cũ.
-- `app/schemas/common.py`: placeholder cho shared response schema nếu cần sau này.
-- `app/schemas/extraction.py`: có `ExtractionJobStatus`, `ExtractionJobResponse`, Topic schemas/responses và Lesson schemas/responses.
-
-### Gemini service layer
-
-`app/services/gemini/` chứa Gemini client và logic liên quan keyword.
-
-Hiện có:
-
-- `app/services/gemini/client.py`: Gemini rotation client hiện có.
-- `app/services/gemini/keyword_service.py`: keyword extraction service hiện có.
-
-Layer này tiếp tục phục vụ keyword APIs. Không thêm logic Topic/Lesson vào đây nếu logic đó thuộc pipeline PDF extraction.
-
-### Extraction service layer
-
-`app/services/extraction/` được tạo sẵn cho orchestration review-first extraction sau này.
-
-File placeholder hiện có:
-
-- `job_service.py`: quản lý skeleton job extraction file-based, gồm tạo job từ PDF upload, đọc job metadata và update status.
-- `review_service.py`: dự kiến quản lý review-first workflow.
-- `topic_service.py`: điều phối Topic review API bằng real Gemini `topic_runner`.
-- `lesson_service.py`: điều phối Lesson review API bằng range-overlap từ `topic/topics_approved.json` và `lesson/lesson_raw.json`; chưa gọi Gemini.
-
-`review_service.py` hiện chỉ là placeholder, chưa có business logic.
-
-### Storage service layer
-
-`app/services/storage/` được tạo sẵn cho file/workspace JSON I/O.
-
-Hiện có:
-
-- `workspace_service.py`: helper file-based cho tạo workspace, lưu PDF upload, ghi/đọc JSON và resolve path theo `job_id`.
-
-### Pipeline adapter layer
-
-`app/pipeline/gemini_extract/` được tạo sẵn để chứa code tối thiểu adapt từ `FastAPI-Khoa-Luan/gemini_pipeline`.
-
-File placeholder hiện có:
-
-- `topic_runner.py`
-- `lesson_runner.py`
-- `prompts.py`
-- `pdf_utils.py`
-
-Layer này giúp tránh trộn code pipeline adapt từ `gemini_pipeline` với FastAPI route/service layer.
-
-### Utils layer
-
-`app/utils/` chứa utility dùng chung.
-
-Hiện có:
-
-- `json_utils.py`: chứa helper parse JSON và normalize text đang được keyword service dùng.
-- `filename_utils.py`: placeholder cho helper tên file/path sau này.
-
-### Workspace folders
-
-Folder nền đã được tạo:
+### Upload job
 
 ```text
-workspace/
-  uploads/
-    .gitkeep
-  outputs/
-    .gitkeep
+POST /api/extract/jobs
+GET  /api/extract/jobs/{job_id}
 ```
 
-`workspace/uploads` và `workspace/outputs` là base storage folder cho PDF upload và JSON output. File sinh ra trong hai folder này được ignore qua `.gitignore`, còn `.gitkeep` được giữ lại để preserve folder.
+`POST /api/extract/jobs` nhận PDF upload qua `multipart/form-data`, field `file`, tạo `job_id`, lưu:
 
-Bước refactor này chỉ sắp xếp lại source structure. Topic extraction và Lesson extraction chưa được implement, chưa copy `gemini_pipeline`, chưa thêm database, UI, chunk extraction, Kaggle, MinIO, MongoDB, PostgreSQL hoặc Neo4j.
+- `workspace/uploads/{job_id}/original.pdf`
+- `workspace/outputs/{job_id}/job.json`
 
-## 12. Step 1 - Job/workspace storage skeleton đã implement
+Status ban đầu:
 
-Step 1 thêm foundation tối thiểu cho review-first PDF extraction workflow.
+```text
+uploaded
+```
 
-Endpoint đã có:
+### Topic extraction và review
 
-- `POST /api/extract/jobs`
-- `GET /api/extract/jobs/{job_id}`
+```text
+POST /api/extract/jobs/{job_id}/topics/extract?offset=auto&split_pdf=true
+GET  /api/extract/jobs/{job_id}/topics
+PUT  /api/extract/jobs/{job_id}/topics
+POST /api/extract/jobs/{job_id}/topics/approve
+```
 
-Khi tạo job, hệ thống:
+`POST /topics/extract` hiện gọi real Gemini topic runner. Public stub extraction không còn được dùng và không có `engine=stub` mode.
 
-1. Nhận PDF upload từ field `file`.
-2. Kiểm tra filename có đuôi `.pdf`.
-3. Sinh `job_id` bằng UUID.
-4. Tạo folder:
-   - `workspace/uploads/{job_id}/`
-   - `workspace/outputs/{job_id}/`
-5. Lưu PDF thành:
-   - `workspace/uploads/{job_id}/original.pdf`
-6. Ghi metadata job vào:
-   - `workspace/outputs/{job_id}/job.json`
-7. Trả metadata gồm `job_id`, `status`, `source_file`, `upload_path`, `output_dir`, `created_at`, `updated_at`.
+Query params:
 
-Status hiện có trong schema:
+- `offset`: mặc định `auto`; nhận `auto`, `none`, hoặc số nguyên dạng chuỗi như `0`, `1`, `4`.
+- `split_pdf`: mặc định `true`.
 
-- `uploaded`
-- `extracting_topics`
-- `reviewing_topics`
-- `topics_approved`
-- `extracting_lessons`
-- `reviewing_lessons`
-- `lessons_approved`
-- `error`
+Approve topics tạo:
 
-Step này chỉ tạo skeleton job/storage. Topic extraction, Lesson extraction, review processing và Gemini calls chưa được implement.
+```text
+workspace/outputs/{job_id}/topic/topics_approved.json
+```
 
-`app/services/storage/workspace_service.py` là module chịu trách nhiệm quản lý workspace theo `job_id`, gồm:
+### Lesson build và review
 
-- Tạo base folder `workspace/uploads` và `workspace/outputs`.
-- Tạo folder theo job.
-- Lưu PDF gốc thành `original.pdf`.
-- Ghi/đọc JSON.
-- Resolve path cho upload dir, output dir, original PDF và `job.json`.
-- Resolve path cho `topic/topic_raw.json`, `topic/topics.json`, `topic/topics_approved.json`.
-- Resolve path cho `lesson/lesson_raw.json`, `lesson/lessons.json`, `lesson/lessons_approved.json`.
-- Kiểm tra job tồn tại bằng `job_exists(job_id)`.
+```text
+POST /api/extract/jobs/{job_id}/lessons/build
+GET  /api/extract/jobs/{job_id}/lessons
+PUT  /api/extract/jobs/{job_id}/lessons
+POST /api/extract/jobs/{job_id}/lessons/approve
+```
 
-Change Log bổ sung:
+Endpoint cũ `POST /api/extract/jobs/{job_id}/lessons/extract` đã được đổi tên thành `/lessons/build` vì endpoint này không gọi Gemini và không extract lesson trực tiếp từ PDF.
 
-- Implemented file-based extraction job skeleton.
-- Added PDF upload job creation.
-- Added GET job metadata endpoint.
-- Standardized storage helper name as `workspace_service.py`.
-- No Topic/Lesson extraction implemented yet.
+`POST /lessons/build` build reviewable lessons từ:
 
-## 13. Step 2 - Topic review API bằng Gemini đã implement
-
-Topic review API hiện dùng real Gemini extraction qua `app/pipeline/gemini_extract/topic_runner.py`. Endpoint public không còn dùng stub data và không có `engine=stub`.
-
-Endpoint đã có:
-
-- `POST /api/extract/jobs/{job_id}/topics/extract?offset=auto&split_pdf=true`
-- `GET /api/extract/jobs/{job_id}/topics`
-- `PUT /api/extract/jobs/{job_id}/topics`
-- `POST /api/extract/jobs/{job_id}/topics/approve`
-
-Luồng hiện tại:
-
-1. `POST /api/extract/jobs/{job_id}/topics/extract`
-   - Kiểm tra `job.json`.
-   - Kiểm tra `workspace/uploads/{job_id}/original.pdf`.
-   - Set status `extracting_topics`.
-   - Gọi Gemini trực tiếp bằng `run_topic_extraction(...)`.
-   - Mặc định `offset=auto`.
-   - Mặc định `split_pdf=true`.
-   - Ghi full raw output vào `topic/topic_raw.json`.
-   - Ghi bản topic review được phép sửa vào `topic/topics.json`.
-   - Ghi raw lesson source vào `lesson/lesson_raw.json`.
-   - Nếu `split_pdf=true`, ghi PDF cắt vào `topic/doc/` và `lesson/doc/`.
-   - Set status `reviewing_topics`.
-
-2. `GET /api/extract/jobs/{job_id}/topics`
-   - Đọc `topic/topics.json`.
-   - Nếu chưa có topics, trả `404` với message `Topics have not been extracted for this job yet.`
-
-3. `PUT /api/extract/jobs/{job_id}/topics`
-   - Nhận body `{ "topics": [...] }`.
-   - Ghi đè `topic/topics.json`.
-   - Không sửa `topic/topic_raw.json`.
-   - Không sửa `topic/topics_approved.json`.
-   - Nếu job chưa ở `topics_approved`, giữ/set status `reviewing_topics`.
-
-4. `POST /api/extract/jobs/{job_id}/topics/approve`
-   - Đọc `topic/topics.json`.
-   - Ghi `topic/topics_approved.json`.
-   - Set status `topics_approved`.
-
-Các file output theo job:
-
-- `workspace/outputs/{job_id}/topic/topic_raw.json`
-- `workspace/outputs/{job_id}/topic/topics.json`
 - `workspace/outputs/{job_id}/topic/topics_approved.json`
 - `workspace/outputs/{job_id}/lesson/lesson_raw.json`
-- `workspace/outputs/{job_id}/topic/doc/*.pdf`
-- `workspace/outputs/{job_id}/lesson/doc/*.pdf`
 
-`topic/topic_raw.json` có shape:
+Nó map lessons vào topics bằng page range overlap, ghi:
 
-```json
-{
-  "job_id": "...",
-  "source": "gemini",
-  "total_pdf_pages": 123,
-  "offset": 4,
-  "offset_detection": {},
-  "topics": [],
-  "lessons": [],
-  "raw_response_text": "...",
-  "raw_payload": {},
-  "split_result": {}
-}
+```text
+workspace/outputs/{job_id}/lesson/lessons.json
 ```
 
-`topic/topics.json` và `topic/topics_approved.json` chỉ chứa mảng topic. `lesson/lesson_raw.json` chỉ chứa mảng raw lesson lấy từ Topic stage.
+Approve lessons tạo:
 
-Lesson extraction phải yêu cầu `topic/topics_approved.json` và `lesson/lesson_raw.json`.
+```text
+workspace/outputs/{job_id}/lesson/lessons_approved.json
+```
 
-## 14. Step 3 - Lesson review API bằng range-overlap đã implement
+## 5. Topic extraction flow hiện tại
 
-Step 3 thêm luồng review-first cho Lesson ở mức backend file-based. Đây chưa phải Gemini Lesson extraction thật. Logic hiện tại mô phỏng pipeline cũ: dùng `topic/topics_approved.json` cộng với `lesson/lesson_raw.json` sinh ra ở Topic stage.
+Flow chính:
 
-Endpoint đã có:
+```text
+original.pdf
+-> front_matter.pdf
+-> Gemini extracts topics/lessons từ front_matter.pdf
+-> code computes end_printed
+-> OCR detects offset từ original.pdf
+-> normalize start/end
+-> split original.pdf into topic/doc and lesson/doc PDFs
+```
 
-- `POST /api/extract/jobs/{job_id}/lessons/extract`
-- `GET /api/extract/jobs/{job_id}/lessons`
-- `PUT /api/extract/jobs/{job_id}/lessons`
-- `POST /api/extract/jobs/{job_id}/lessons/approve`
+Chi tiết:
 
-Luồng hiện tại:
+1. Đọc `workspace/uploads/{job_id}/original.pdf`.
+2. Tạo `workspace/outputs/{job_id}/topic/front_matter.pdf`.
+3. Gọi Gemini bằng `generate_with_pdf(...)` với `front_matter.pdf`.
+4. Nếu front-matter extraction lỗi hoặc không trả đủ structure, fallback sang full `original.pdf`.
+5. Parse JSON bằng `parse_json_loose(...)`.
+6. Normalize payload bằng `normalize_topic_lesson_payload(...)`.
+7. Tính `end_printed` từ các `start_printed` liên tiếp.
+8. Nếu `offset=auto`, detect offset bằng OCR bottom-crop cumulative voting.
+9. Convert trang in sang trang PDF thật bằng offset.
+10. Nếu `split_pdf=true`, cắt `original.pdf` vào `topic/doc/` và `lesson/doc/`.
+11. Ghi artifact JSON và set status `reviewing_topics`.
 
-1. `POST /api/extract/jobs/{job_id}/lessons/extract`
-   - Kiểm tra `job.json`.
-   - Kiểm tra `workspace/uploads/{job_id}/original.pdf`.
-   - Yêu cầu `topic/topics_approved.json`; nếu thiếu trả `409` với message `Topics must be approved before extracting lessons.`
-   - Yêu cầu `lesson/lesson_raw.json`; nếu thiếu trả `409` với message `Raw lessons are missing. Run topic extraction first.`
-   - Set status `extracting_lessons`.
-   - Đọc approved topics và raw lessons.
-   - Gán raw lessons vào topic bằng range-overlap.
-   - Ghi bản review được phép sửa vào `lesson/lessons.json`.
-   - Set status `reviewing_lessons`.
+## 6. Front matter PDF
 
-2. `GET /api/extract/jobs/{job_id}/lessons`
-   - Đọc `lesson/lessons.json`.
-   - Nếu chưa có lessons, trả `404` với message `Lessons have not been extracted for this job yet.`
+`create_front_matter_pdf(...)` nằm trong:
 
-3. `PUT /api/extract/jobs/{job_id}/lessons`
-   - Nhận body `{ "lessons": [...] }`.
-   - Nếu job đã `lessons_approved`, trả `409` với message `Lessons are already approved. Re-open lesson review is not implemented yet.`
-   - Ghi đè `lesson/lessons.json`.
-   - Không sửa `lesson/lesson_raw.json`.
-   - Không sửa `lesson/lessons_approved.json`.
-   - Set/giữ status `reviewing_lessons`.
+```text
+app/pipeline/gemini_extract/pdf_utils.py
+```
 
-4. `POST /api/extract/jobs/{job_id}/lessons/approve`
-   - Đọc `lesson/lessons.json`.
-   - Ghi `lesson/lessons_approved.json`.
-   - Set status `lessons_approved`.
+Mặc định hiện tại cắt trang PDF thật `1..12` từ `original.pdf`.
 
-Range rule hiện dùng:
+Nếu mục lục của sách xuất hiện muộn hơn, nên tăng range lên `1..20` trong cấu hình hoặc tham số runner. Range 12 hoặc 20 trang này chỉ dùng để giảm input Gemini khi trích xuất cấu trúc sách, không ảnh hưởng đến nguồn cắt PDF cuối cùng.
 
-- Raw lesson thuộc approved topic nếu `lesson.end >= topic.start` và `lesson.start <= topic.end`.
-- Khi thêm lesson vào topic:
-  - `start = max(lesson.start, topic.start)`
-  - `end = min(lesson.end, topic.end)`
-- Nếu topic không có raw lesson giao range, tạo fallback lesson:
-  - `name = "lesson_fallback_for_{topic.name}"`
-  - `start = topic.start`
-  - `end = topic.end`
-  - `heading = topic.heading`
-  - `title = topic.title`
+## 7. Prompt organization
 
-Các file output theo job:
+Prompt cũ `app/pipeline/gemini_extract/prompts.py` đã được bỏ. Prompt hiện nằm trong package:
 
-- `workspace/outputs/{job_id}/lesson/lesson_raw.json`
-- `workspace/outputs/{job_id}/lesson/lessons.json`
-- `workspace/outputs/{job_id}/lesson/lessons_approved.json`
+```text
+app/pipeline/gemini_extract/prompts/
+  __init__.py
+  topic_lesson_prompt.py
+```
 
-`lesson/lesson_raw.json` là raw lesson source từ Topic stage. `lesson/lessons.json` là generated/reviewable lesson list và mỗi item có `topic_name`, `topic_title`. `lesson/lessons_approved.json` là final approved lesson list.
+`build_topic_lesson_prompt()` hiện nằm trong:
 
-Lý do không gọi Gemini ở Step 3: trong `FastAPI-Khoa-Luan/gemini_pipeline`, Lesson stage không gọi Gemini độc lập. Lesson stage dùng raw lessons đã có từ Topic stage và approved topics đã được review để tạo lesson output cuối.
+```text
+app/pipeline/gemini_extract/prompts/topic_lesson_prompt.py
+```
+
+Prompt hiện yêu cầu Gemini đọc các trang TOC/front-matter, trả JSON hợp lệ, ưu tiên `start_printed`, và không bắt Gemini tự đoán `end_printed`.
+
+## 8. Tính end_printed
+
+`normalize_topic_lesson_payload(...)` trong `app/pipeline/gemini_extract/topic_parser.py` gọi `fill_end_printed_from_starts(...)` để tính `end_printed` từ các `start_printed`.
+
+Ví dụ topic:
+
+```text
+topic_01.start_printed = 5
+topic_02.start_printed = 32
+=> topic_01.end_printed = 31
+```
+
+Ví dụ lesson:
+
+```text
+lesson_01.start_printed = 5
+lesson_02.start_printed = 10
+=> lesson_01.end_printed = 9
+```
+
+Cách này giảm hallucination của LLM và giữ page range deterministic. Nếu topic/lesson cuối không có item kế tiếp, code dùng `printed_end_of_main` nếu Gemini phát hiện được; nếu không, fallback về range ngắn theo dữ liệu có sẵn.
+
+## 9. OCR offset detection
+
+`offset=auto` dùng OCR bottom-crop cumulative voting, không dùng Gemini verify offset trong default path.
+
+File chính:
+
+```text
+app/pipeline/gemini_extract/offset_detector.py
+```
+
+Hàm chính:
+
+```text
+detect_page_offset_by_bottom_ocr(...)
+```
+
+Wrapper đang dùng bởi runner:
+
+```text
+detect_page_offset(...)
+```
+
+Default strategy:
+
+```text
+bottom_ocr_cumulative_vote
+```
+
+Công thức:
+
+```text
+offset = actual_page - printed_page
+actual_page = printed_page + offset
+```
+
+Ví dụ:
+
+```text
+actual PDF page 30 có printed page 29
+actual PDF page 31 có printed page 30
+=> offset = 1
+```
+
+Sau đó:
+
+```text
+start = start_printed + offset
+end = end_printed + offset
+```
+
+Default OCR behavior:
+
+- Crop đáy trang khoảng `250px`.
+- Kiểm tra nhiều trang theo kiểu cumulative voting.
+- Nếu một offset đạt đủ số phiếu, trả offset đó.
+- Tesseract binary phải được cài ở OS level.
+
+Ví dụ macOS:
+
+```bash
+brew install tesseract
+```
+
+## 10. Topic output files
+
+Sau `POST /topics/extract`, các file sau có thể được tạo:
+
+```text
+workspace/outputs/{job_id}/topic/front_matter.pdf
+workspace/outputs/{job_id}/topic/topic_raw.json
+workspace/outputs/{job_id}/topic/topics.json
+workspace/outputs/{job_id}/lesson/lesson_raw.json
+workspace/outputs/{job_id}/topic/doc/*.pdf
+workspace/outputs/{job_id}/lesson/doc/*.pdf
+```
+
+Ý nghĩa:
+
+- `topic_raw.json`: artifact debug/raw đầy đủ của Topic stage, gồm `source`, `extraction_input`, `front_matter_pdf_path`, `fallback_used`, `offset`, `offset_detection`, `raw_response_text`, `raw_payload`, `topics`, `lessons`, `split_result`.
+- `topics.json`: danh sách topics để review/edit.
+- `lesson_raw.json`: danh sách lessons thô do Topic stage trả về, dùng cho `/lessons/build`.
+- `topic/doc/*.pdf` và `lesson/doc/*.pdf`: PDF cắt từ `original.pdf`.
+
+## 11. Full workflow hiện tại
+
+```text
+POST /api/extract/jobs
+-> save original.pdf
+-> status = uploaded
+
+POST /api/extract/jobs/{job_id}/topics/extract?offset=auto&split_pdf=true
+-> create front_matter.pdf
+-> Gemini extracts topics/lessons from front_matter.pdf
+-> fallback to original.pdf only if needed
+-> compute end_printed
+-> OCR detects offset
+-> normalize start/end
+-> split original.pdf into topic/doc and lesson/doc
+-> create topic_raw.json, topics.json, lesson_raw.json
+-> status = reviewing_topics
+
+GET/PUT /api/extract/jobs/{job_id}/topics
+-> review/edit topics
+
+POST /api/extract/jobs/{job_id}/topics/approve
+-> create topics_approved.json
+-> status = topics_approved
+
+POST /api/extract/jobs/{job_id}/lessons/build
+-> build lessons.json from approved topics + lesson_raw
+-> map each lesson to a topic
+-> status = reviewing_lessons
+
+GET/PUT /api/extract/jobs/{job_id}/lessons
+-> review/edit lessons
+
+POST /api/extract/jobs/{job_id}/lessons/approve
+-> create lessons_approved.json
+-> status = lessons_approved
+```
+
+## 12. Chunk note
+
+Chunk extraction chưa được implement. Khi bổ sung sau này, chunk extraction nên chạy trên:
+
+```text
+workspace/outputs/{job_id}/lesson/doc/*.pdf
+```
+
+Không nên chạy chunk extraction trên `front_matter.pdf`, vì file này chỉ phục vụ Gemini đọc mục lục/phần đầu sách để lấy cấu trúc Topic/Lesson.
+
+## 13. Scripts cleanup note
+
+Production OCR offset logic hiện nằm trong:
+
+```text
+app/pipeline/gemini_extract/offset_detector.py
+```
+
+Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuyển vào `scripts/experiments/`. Script test sạch có thể gọi trực tiếp `detect_page_offset_by_bottom_ocr(...)` thay vì copy logic OCR.
+
+## 14. Quy tắc phát triển
+
+- Không hard-code secret hoặc API key.
+- Không đưa database/object storage vào AI-Extract nếu chưa có yêu cầu rõ.
+- Không copy toàn bộ `gemini_pipeline`.
+- Giữ API review-first file-based.
+- Giữ runtime keyword APIs hiện có.
+- Khi chỉnh extraction flow, cập nhật docs và Change Log trong file này.
+
+## 15. Change Log / Context Updates
+
+### 2026-05-25
+
+- Tạo context ban đầu cho AI-Extract là FastAPI service nhẹ, tách khỏi backend luận văn đầy đủ.
+- Refactor source structure thành route/service/schema/pipeline/storage layers.
+- Implement job/workspace storage skeleton với `POST /api/extract/jobs` và `GET /api/extract/jobs/{job_id}`.
+- Implement Topic review APIs, sau đó thay public Topic stub bằng real Gemini `topic_runner`.
+- Implement Lesson review flow dạng build từ approved topics + raw lessons.
+- Đổi lesson endpoint từ `/lessons/extract` sang `/lessons/build` vì endpoint này không gọi Gemini.
+- Refactor output files vào `topic/` và `lesson/`.
+- Thêm Gemini PDF-capable `generate_with_pdf(...)`.
+- Thêm parser/normalizer, PDF split helpers, OCR offset detection và manual runner.
+- Thay Gemini verify offset bằng OCR bottom-crop cumulative voting.
+- Refactor prompts thành package `app/pipeline/gemini_extract/prompts/`.
+- Chuyển Topic/Lesson structure extraction sang TOC/front-matter-first strategy.
+- Thêm `topic/front_matter.pdf`.
+- Thêm logic tính `end_printed` từ `start_printed`.
+- Giữ full PDF extraction làm fallback.
+- Cập nhật tài liệu cho workflow Topic/Lesson extraction hiện tại:
+  - `front_matter.pdf` chỉ dùng làm Gemini input để lấy cấu trúc sách.
+  - `original.pdf` là nguồn cắt final topic/lesson PDFs.
+  - OCR offset formula và default strategy đã được mô tả rõ.
+  - `/lessons/build` được mô tả là build reviewable lessons từ approved topics + raw lessons.
+  - Loại bỏ mô tả lỗi thời về skeleton extraction, public stub behavior và Gemini offset verification default.
