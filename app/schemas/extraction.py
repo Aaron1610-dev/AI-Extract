@@ -133,25 +133,21 @@ class ChunkCutlineDebugResponse(BaseModel):
     debug_json_path: str
     debug_page_path: str | None = None
     debug_bbox_path: str | None = None
-
-
-class ChunkCutlineApplyResponse(BaseModel):
-    job_id: str
-    lesson_name: str
-    selected_chunk: str
-    previous_chunk: str
-    applied: bool
-    previous_chunk_pdf: str
-    selected_chunk_pdf: str
-    debug_apply_json_path: str
-
-
-class ChunkCutlinePromoteResponse(BaseModel):
-    job_id: str
-    lesson_name: str
-    selected_chunk: str
+    promoted: bool = False
+    promote_status: str = "not_run"
+    promote_reason: str | None = None
     previous_chunk: str | None = None
-    promoted: bool
-    selected_chunk_pdf: str
+    selected_chunk_pdf: str | None = None
     previous_chunk_pdf: str | None = None
-    debug_promote_json_path: str
+    debug_promote_json_path: str | None = None
+
+
+class LessonCutlineFullResponse(BaseModel):
+    job_id: str
+    lesson_name: str
+    status: str
+    processed_chunks: list[str]
+    skipped_chunks: list[dict[str, str]]
+    failed_chunks: list[dict[str, str]]
+    updated_pdfs: list[str]
+    debug_summary_path: str

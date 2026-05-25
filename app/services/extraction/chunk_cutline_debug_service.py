@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import shutil
 from typing import Any
 from uuid import uuid4
 
 from app.schemas.extraction import ChunkCutlineDebugResponse
+from app.services.extraction.chunk_cutline_promote_service import (
+    InternalPromoteInputError,
+    promote_cutline_for_chunk,
+)
 from app.services.extraction.job_service import get_job
 from app.services.kaggle_cutline_debug_service import (
     KaggleCutlineDebugNotConfigured,
@@ -30,11 +35,111 @@ class ChunkCutlineInputError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class CutlineDetectionResult:
+    job_id: str
+    lesson_name: str
+    chunk_name: str
+    matched: bool
+    page_number: int
+    heading: str
+    title: str
+    matched_text: str | None
+    bbox: list[int] | None
+    y_cut: int | None
+    match_score: int | None
+    matched_prefix: int | None
+    expected_len: int | None
+    match_ratio: float | None
+    best_mode: str | None
+    weak_cut: bool | None
+    force_cut: bool | None
+    early_stop: bool | None
+    reason: str | None
+    debug_json_path: str
+    debug_page_path: str
+    debug_bbox_path: str | None
+    artifact: dict[str, Any]
+
+
 def detect_debug_cutline_for_chunk(
     job_id: str,
     lesson_name: str,
     chunk_name: str,
 ) -> ChunkCutlineDebugResponse:
+    detection = detect_cutline_artifacts_for_chunk(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        chunk_name=chunk_name,
+    )
+    chunk_json_path = get_chunk_json_path(job_id, lesson_name, chunk_name)
+    chunk = read_json(chunk_json_path)
+    if not isinstance(chunk, dict):
+        raise ChunkCutlineInputError(f"Chunk JSON must contain an object: {chunk_json_path}")
+
+    promote_status = "not_run"
+    promote_reason = None
+    promote_response = None
+    if detection.matched:
+        if not _is_first_chunk(chunk_name=chunk_name, selected_chunk=chunk) and not bool(
+            chunk.get("content_head")
+        ):
+            promote_status = "skipped"
+            promote_reason = (
+                "Selected chunk does not have content_head=true; page-range doc is already sufficient."
+            )
+        else:
+            try:
+                promote_response = promote_cutline_for_chunk(
+                    job_id=job_id,
+                    lesson_name=lesson_name,
+                    chunk_name=chunk_name,
+                )
+                promote_status = "promoted"
+            except InternalPromoteInputError as exc:
+                promote_status = "skipped"
+                promote_reason = str(exc)
+
+    return ChunkCutlineDebugResponse(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        chunk_name=chunk_name,
+        matched=detection.matched,
+        page_number=detection.page_number,
+        heading=detection.heading,
+        title=detection.title,
+        matched_text=detection.matched_text,
+        bbox=detection.bbox,
+        y_cut=detection.y_cut,
+        match_score=detection.match_score,
+        matched_prefix=detection.matched_prefix,
+        expected_len=detection.expected_len,
+        match_ratio=detection.match_ratio,
+        best_mode=detection.best_mode,
+        weak_cut=detection.weak_cut,
+        force_cut=detection.force_cut,
+        early_stop=detection.early_stop,
+        reason=detection.reason,
+        debug_json_path=detection.debug_json_path,
+        debug_page_path=detection.debug_page_path,
+        debug_bbox_path=detection.debug_bbox_path,
+        promoted=bool(promote_response and promote_response.promoted),
+        promote_status=promote_status,
+        promote_reason=promote_reason,
+        previous_chunk=promote_response.previous_chunk if promote_response else None,
+        selected_chunk_pdf=promote_response.selected_chunk_pdf if promote_response else None,
+        previous_chunk_pdf=promote_response.previous_chunk_pdf if promote_response else None,
+        debug_promote_json_path=(
+            promote_response.debug_promote_json_path if promote_response else None
+        ),
+    )
+
+
+def detect_cutline_artifacts_for_chunk(
+    job_id: str,
+    lesson_name: str,
+    chunk_name: str,
+) -> CutlineDetectionResult:
     get_job(job_id)
 
     lesson_pdf_path = get_lesson_doc_path(job_id, lesson_name)
@@ -99,21 +204,17 @@ def detect_debug_cutline_for_chunk(
     }
     write_json(debug_json_path, artifact)
 
-    matched = bool(result.get("matched", False))
-    bbox = _int_list_or_none(result.get("bbox"))
-    y_cut = _optional_int(result.get("y_cut"))
-
-    return ChunkCutlineDebugResponse(
+    return CutlineDetectionResult(
         job_id=job_id,
         lesson_name=lesson_name,
         chunk_name=chunk_name,
-        matched=matched,
+        matched=bool(result.get("matched", False)),
         page_number=page_number,
         heading=heading,
         title=title,
         matched_text=_optional_str(result.get("matched_text")),
-        bbox=bbox,
-        y_cut=y_cut,
+        bbox=_int_list_or_none(result.get("bbox")),
+        y_cut=_optional_int(result.get("y_cut")),
         match_score=_optional_int(result.get("match_score") or result.get("best_match_score")),
         matched_prefix=_optional_int(result.get("matched_prefix")),
         expected_len=_optional_int(result.get("expected_len")),
@@ -126,6 +227,7 @@ def detect_debug_cutline_for_chunk(
         debug_json_path=str(debug_json_path),
         debug_page_path=str(page_image_path),
         debug_bbox_path=str(bbox_image_path) if bbox_image_path.exists() else None,
+        artifact=artifact,
     )
 
 
@@ -248,8 +350,14 @@ def _copy_kaggle_bbox_image(
             return
 
 
+def _is_first_chunk(*, chunk_name: str, selected_chunk: dict[str, Any]) -> bool:
+    return chunk_name == "chunk_01" or bool(selected_chunk.get("first_chunk"))
+
+
 __all__ = [
     "ChunkCutlineInputError",
+    "CutlineDetectionResult",
     "KaggleCutlineDebugNotConfigured",
+    "detect_cutline_artifacts_for_chunk",
     "detect_debug_cutline_for_chunk",
 ]

@@ -178,45 +178,60 @@ workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/bbox.png
 
 Thư mục debug ổn định theo từng chunk. Chạy lại cùng chunk sẽ overwrite các file trong `debug/{chunk_name}/`. `request_id` chỉ được lưu bên trong `cutline.json` để kiểm tra output stale, không được đưa vào tên thư mục.
 
+Normal one-call workflow là:
+
+```text
+POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline
+-> detect y_cut bằng Kaggle/PaddleOCR
+-> nếu matched và applicable thì auto-promote official doc/chunk_*.pdf
+```
+
 Endpoint không sửa:
 
 - `chunk/{lesson_name}/{chunk_name}.json`
-- `chunk/{lesson_name}/doc/{chunk_name}.pdf`
 - `job.json`
 
-Stage B apply cutline là endpoint riêng và không gọi Kaggle:
-
-```text
-POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline/apply
-```
-
-Endpoint này đọc `debug/{chunk_name}/cutline.json` đã có, ghi `debug/{chunk_name}/cutline_apply.json`, và tạo PDF recut an toàn trong:
-
-```text
-workspace/outputs/{job_id}/chunk/{lesson_name}/doc_cutline/
-```
-
-Các PDF chính trong `doc/` không bị overwrite.
-
-Stage C promote cutline là endpoint riêng và cũng không gọi Kaggle:
-
-```text
-POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline/promote
-```
-
-Endpoint này đọc `debug/{chunk_name}/cutline.json`, ghi `debug/{chunk_name}/cutline_promote.json`, recut từ `lesson/doc/{lesson_name}.pdf`, rồi thay thế official PDFs trong:
+Nếu promote chạy, endpoint update trực tiếp official PDF trong:
 
 ```text
 workspace/outputs/{job_id}/chunk/{lesson_name}/doc/
 ```
 
-Trước khi replace, endpoint backup bản official đầu tiên vào:
+Endpoint đọc `debug/{chunk_name}/cutline.json`, ghi `debug/{chunk_name}/cutline_promote.json`, recut từ `lesson/doc/{lesson_name}.pdf`, rồi thay thế trực tiếp official PDFs trong:
 
 ```text
-workspace/outputs/{job_id}/chunk/{lesson_name}/doc_backup_before_cutline/
+workspace/outputs/{job_id}/chunk/{lesson_name}/doc/
 ```
 
-`chunk_01` được hỗ trợ bằng cách crop từ `y_cut` tới bottom cho selected chunk. Với `chunk_02+`, endpoint chỉ promote khi `content_head=true`; previous chunk nhận phần top của page start, selected chunk nhận phần bottom.
+Không có endpoint promote riêng, không tạo thêm folder PDF output nào, và không tạo preview/backup PDF folder. Rerun `/cutline` sẽ overwrite `doc/chunk_*.pdf` liên quan khi detection matched và applicable. Endpoint không sửa chunk JSON và không update job status.
+
+`chunk_01` được hỗ trợ bằng cách crop từ `y_cut` tới bottom cho selected chunk. Với `chunk_02+`, endpoint chỉ promote khi `content_head=true`; previous chunk nhận phần top của page start, selected chunk nhận phần bottom. Với `content_head=false`, `/cutline` trả `promote_status=skipped`.
+
+Full lesson workflow cho một selected lesson:
+
+```text
+POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/cutline/full
+```
+
+Endpoint này không xử lý tất cả lessons và không phải global batch. Nó detect toàn bộ cutline cần thiết trong một lesson trước, build boundary map, rồi rebuild tất cả official PDFs của lesson trong một pass từ:
+
+```text
+workspace/outputs/{job_id}/lesson/doc/{lesson_name}.pdf
+```
+
+Output trực tiếp:
+
+```text
+workspace/outputs/{job_id}/chunk/{lesson_name}/doc/chunk_*.pdf
+```
+
+Summary:
+
+```text
+workspace/outputs/{job_id}/chunk/{lesson_name}/debug/lesson_cutline_full.json
+```
+
+Nếu một required cutline fail hoặc confidence không đủ, endpoint ghi summary `status=failed` và không rebuild official PDFs.
 
 ## 7. Lỗi thường gặp
 

@@ -583,7 +583,15 @@ Chi tiết cấu hình và lỗi thường gặp nằm trong:
 docs/KAGGLE_CUTLINE_READINESS.md
 ```
 
-Output debug-only:
+Normal one-call workflow:
+
+```text
+POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline
+-> detect y_cut bằng Kaggle/PaddleOCR
+-> nếu matched và applicable thì auto-promote official doc/chunk_*.pdf
+```
+
+Output debug:
 
 ```text
 workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/cutline.json
@@ -607,23 +615,25 @@ Response slim:
   "matched_text": "3. ...",
   "bbox": [120, 345, 980, 390],
   "y_cut": 345,
+  "promoted": true,
+  "promote_status": "promoted",
+  "previous_chunk": "chunk_02",
+  "selected_chunk_pdf": ".../doc/chunk_03.pdf",
+  "previous_chunk_pdf": ".../doc/chunk_02.pdf",
   "debug_json_path": "...",
   "debug_page_path": "...",
-  "debug_bbox_path": "..."
+  "debug_bbox_path": "...",
+  "debug_promote_json_path": "..."
 }
 ```
 
-Nếu không match, endpoint vẫn ghi debug JSON/ảnh và trả `matched=false` với reason nếu Kaggle output hợp lệ. Đây chỉ là Stage A để quan sát cutline; bước sau mới quyết định có áp dụng `y_cut` để recut PDF hay không.
+Nếu không match, endpoint vẫn ghi debug JSON/ảnh và trả `matched=false`, `promoted=false`, `promote_status=not_run` với reason nếu Kaggle output hợp lệ.
 
-### Chunk cutline apply cho một chunk
+Nếu matched nhưng selected chunk là `chunk_02+` và `content_head=false`, detection vẫn chạy nhưng promote được skip với `promote_status=skipped` và `promote_reason=Selected chunk does not have content_head=true; page-range doc is already sufficient.`
 
-Stage B dùng `y_cut` đã có từ Stage A để tạo PDF recut an toàn cho đúng một selected chunk và previous chunk. Endpoint này không gọi Kaggle, không chạy PaddleOCR và không sửa các PDF chính trong `doc/`.
+### Chunk cutline auto-promote vào official doc
 
-Endpoint:
-
-```text
-POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline/apply
-```
+Sau detection, `/cutline` dùng `cutline.json` vừa ghi để recut từ lesson PDF gốc và thay thế trực tiếp PDF chính trong `chunk/{lesson_name}/doc/`. Không có endpoint promote riêng. Bước promote nội bộ không gọi Kaggle, không chạy PaddleOCR, không sửa chunk JSON và không update job status.
 
 Input bắt buộc:
 
@@ -633,60 +643,7 @@ workspace/outputs/{job_id}/chunk/{lesson_name}/{chunk_name}.json
 workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/cutline.json
 ```
 
-Điều kiện:
-
-- selected chunk không được là `chunk_01`.
-- selected chunk phải có `content_head=true`.
-- cutline JSON phải có `matched=true`.
-- `page_number` trong cutline JSON phải bằng `selected_chunk.start`.
-- `y_cut` phải tồn tại.
-- confidence phải đủ an toàn: `force_cut=true`, hoặc `weak_cut=true`, hoặc `matched_prefix >= 3`, hoặc `match_ratio >= 0.5`.
-
-Output mới:
-
-```text
-workspace/outputs/{job_id}/chunk/{lesson_name}/doc_cutline/{previous_chunk}.pdf
-workspace/outputs/{job_id}/chunk/{lesson_name}/doc_cutline/{selected_chunk}.pdf
-workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/cutline_apply.json
-```
-
-Quy tắc recut từ lesson PDF gốc:
-
-- previous chunk PDF gồm full pages `P..S-1` và phần top của page `S` từ `0..y_cut`.
-- selected chunk PDF gồm phần bottom của page `S` từ `y_cut..bottom` và full pages `S+1..E`.
-- `y_cut` từ ảnh OCR được đổi sang tọa độ PDF bằng `pdf_y_cut = y_cut * pdf_page_height / image_height`.
-
-Endpoint này không overwrite:
-
-```text
-workspace/outputs/{job_id}/chunk/{lesson_name}/doc/*.pdf
-```
-
-### Chunk cutline promote vào official doc
-
-Stage C dùng `cutline.json` đã có để recut từ lesson PDF gốc và thay thế PDF chính trong `chunk/{lesson_name}/doc/`. Endpoint này không gọi Kaggle, không chạy PaddleOCR, không sửa chunk JSON và không update job status.
-
-Endpoint:
-
-```text
-POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline/promote
-```
-
-Input bắt buộc:
-
-```text
-workspace/outputs/{job_id}/lesson/doc/{lesson_name}.pdf
-workspace/outputs/{job_id}/chunk/{lesson_name}/{chunk_name}.json
-workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/cutline.json
-```
-
-Backup trước khi overwrite official PDF:
-
-```text
-workspace/outputs/{job_id}/chunk/{lesson_name}/doc_backup_before_cutline/{chunk_name}.pdf
-```
-
-Nếu backup đã tồn tại thì không overwrite backup. Nhờ vậy có thể rerun promote nhiều lần nhưng vẫn giữ bản page-range ban đầu.
+Không có preview/apply endpoint, không có manual promote endpoint, và không tạo folder PDF output mới. Rerun `/cutline` sẽ overwrite trực tiếp các file `doc/chunk_*.pdf` liên quan khi detection matched và applicable.
 
 Trường hợp `chunk_01` hoặc `first_chunk=true`:
 
@@ -699,11 +656,11 @@ Trường hợp `chunk_02+` với `content_head=true`:
 
 - Previous chunk nhận full pages `P..S-1` và phần top của page `S` từ `0..y_cut`.
 - Selected chunk nhận phần bottom của page `S` từ `y_cut..bottom` và full pages `S+1..E`.
-- Cả `doc/{previous_chunk}.pdf` và `doc/{selected_chunk}.pdf` được replace sau khi backup.
+- Cả `doc/{previous_chunk}.pdf` và `doc/{selected_chunk}.pdf` được replace trực tiếp.
 
 Trường hợp `chunk_02+` nhưng `content_head=false`:
 
-- Endpoint trả `400` vì official page-range doc đã đủ, không cần cutline promote.
+- `/cutline` trả `promote_status=skipped` vì official page-range doc đã đủ.
 
 Debug promote JSON:
 
@@ -711,7 +668,32 @@ Debug promote JSON:
 workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/cutline_promote.json
 ```
 
-File này ghi tọa độ chuyển đổi `y_cut_image -> y_cut_pdf`, thông tin confidence, output official PDFs và backup paths.
+File này ghi tọa độ chuyển đổi `y_cut_image -> y_cut_pdf`, output official PDFs, `promoted=true` và `backup_created=false`.
+`y_cut` từ ảnh OCR được đổi sang tọa độ PDF bằng `pdf_y_cut = y_cut * pdf_page_height / image_height`; nếu `image_height` không có trong `cutline.json`, backend đọc từ `debug/{chunk_name}/page.png`.
+
+### Full lesson cutline cho một lesson
+
+Endpoint:
+
+```text
+POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/cutline/full
+```
+
+Endpoint này chỉ xử lý một selected lesson, không xử lý toàn bộ lessons và không implement global batch. Workflow:
+
+- Load `chunk/{lesson_name}/chunk_*.json` và sort theo số chunk.
+- Detect cutline trước cho các chunk cần boundary: `chunk_01` khi `first_chunk=true`, và `chunk_02+` khi `content_head=true`.
+- Skip các chunk `content_head=false`.
+- Nếu bất kỳ required cutline nào fail hoặc confidence không đủ, ghi summary `status=failed` và không rebuild official PDFs.
+- Nếu tất cả required cutlines hợp lệ, build boundary map rồi rebuild toàn bộ `chunk/{lesson_name}/doc/chunk_*.pdf` trong một pass từ `lesson/doc/{lesson_name}.pdf`.
+
+Output summary:
+
+```text
+workspace/outputs/{job_id}/chunk/{lesson_name}/debug/lesson_cutline_full.json
+```
+
+Full lesson rebuild không tạo thêm PDF folder, không tạo preview/backup folder, không sửa chunk JSON và không update job status. Với mỗi chunk, start boundary lấy từ cutline của chính chunk nếu có; end boundary lấy từ cutline của next chunk nếu next chunk start page nằm trong range hiện tại. PDF được ghi trực tiếp vào `chunk/{lesson_name}/doc/`.
 
 ## 13. Scripts cleanup note
 
@@ -768,14 +750,17 @@ Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuy
 - Backend chỉ render trang `chunk.start` thành PNG, tạo `run_request.json`, tự build/push Kaggle dataset/kernel debug-only và đọc output.
 - Loại bỏ `paddleocr` khỏi backend requirements; AI-Extract backend không import/call PaddleOCR local.
 - Thay placeholder external-command cũ bằng adapter Kaggle thật dựa trên dataset/kernel/status/output flow của project cũ.
-- Cutline debug không sửa chunk JSON, không sửa chunk PDF, không update job status và không implement batch cutline processing.
+- Cutline debug không sửa chunk JSON, không update job status và không implement batch cutline processing.
 - Thêm readiness script `scripts/check_kaggle_cutline_ready.py` và tài liệu `docs/KAGGLE_CUTLINE_READINESS.md` để kiểm tra Kaggle config trước khi chạy endpoint.
 - Readiness check không gọi Kaggle và không in secret values.
 - Cập nhật kernel one-chunk để dùng lại old thesis chunk cutline scoring/matching logic từ `chunk_postprocess.py`.
 - `cutline_result.json` giờ có thêm `match_score`, `matched_prefix`, `expected_len`, `match_ratio`, `prefix_hits`, `lcs`, `cov_obs`, `cov_exp`, `best_mode`, `weak_cut`, `force_cut`, `early_stop`.
-- Thêm Stage B cutline apply endpoint cho một selected chunk: `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline/apply`.
-- Stage B chỉ tạo PDF recut an toàn trong `chunk/{lesson_name}/doc_cutline/`, không overwrite `doc/*.pdf`, không gọi Kaggle/PaddleOCR và không batch process.
-- Refactor cutline debug artifacts vào folder ổn định `chunk/{lesson_name}/debug/{chunk_name}/` gồm `page.png`, `bbox.png`, `cutline.json`, `cutline_apply.json`; rerun cùng chunk sẽ overwrite các file này.
+- One-chunk cutline endpoint `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline` now detects with Kaggle/PaddleOCR and auto-promotes official `chunk/{lesson_name}/doc/chunk_*.pdf` when matched and applicable.
+- Public promote route removed; `/cutline` is the only public one-chunk cutline endpoint.
+- Auto-promote recuts from `lesson/doc/{lesson_name}.pdf` and overwrites directly `chunk/{lesson_name}/doc/chunk_*.pdf`; không tạo preview/backup PDF folder, không gọi Kaggle/PaddleOCR trong promote step và không batch process.
+- Refactor cutline debug artifacts vào folder ổn định `chunk/{lesson_name}/debug/{chunk_name}/` gồm `page.png`, `bbox.png`, `cutline.json`, `cutline_promote.json`; rerun cùng chunk sẽ overwrite các file này.
+- Thêm full-lesson cutline endpoint cho một selected lesson: `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/cutline/full`.
+- Full-lesson cutline detect tất cả required boundaries trước, fail thì không rebuild PDFs, success thì rebuild toàn bộ `chunk/{lesson_name}/doc/chunk_*.pdf` trong một pass từ `lesson/doc/{lesson_name}.pdf`; không xử lý all lessons và không batch toàn cục.
 - Cập nhật tài liệu cho workflow Topic/Lesson extraction hiện tại:
   - `front_matter.pdf` chỉ dùng làm Gemini input để lấy cấu trúc sách.
   - `original.pdf` là nguồn cắt final topic/lesson PDFs.

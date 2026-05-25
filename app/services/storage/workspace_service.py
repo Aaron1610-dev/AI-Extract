@@ -56,16 +56,12 @@ def get_chunk_doc_dir(job_id: str, lesson_name: str) -> Path:
     return get_chunk_lesson_doc_dir(job_id, lesson_name)
 
 
-def get_chunk_doc_backup_dir(job_id: str, lesson_name: str) -> Path:
-    return get_chunk_lesson_dir(job_id, lesson_name) / "doc_backup_before_cutline"
-
-
-def get_chunk_cutline_doc_dir(job_id: str, lesson_name: str) -> Path:
-    return get_chunk_lesson_dir(job_id, lesson_name) / "doc_cutline"
-
-
 def get_chunk_debug_dir(job_id: str, lesson_name: str, chunk_name: str) -> Path:
     return get_chunk_lesson_dir(job_id, lesson_name) / "debug" / chunk_name
+
+
+def get_chunk_lesson_debug_dir(job_id: str, lesson_name: str) -> Path:
+    return get_chunk_lesson_dir(job_id, lesson_name) / "debug"
 
 
 def get_topic_raw_json_path(job_id: str) -> Path:
@@ -108,14 +104,6 @@ def get_chunk_pdf_path(job_id: str, lesson_name: str, chunk_name: str) -> Path:
     return get_chunk_lesson_doc_dir(job_id, lesson_name) / f"{chunk_name}.pdf"
 
 
-def get_chunk_doc_backup_pdf_path(job_id: str, lesson_name: str, chunk_name: str) -> Path:
-    return get_chunk_doc_backup_dir(job_id, lesson_name) / f"{chunk_name}.pdf"
-
-
-def get_chunk_cutline_pdf_path(job_id: str, lesson_name: str, chunk_name: str) -> Path:
-    return get_chunk_cutline_doc_dir(job_id, lesson_name) / f"{chunk_name}.pdf"
-
-
 def get_chunk_cutline_json_path(
     job_id: str,
     lesson_name: str,
@@ -140,20 +128,16 @@ def get_chunk_cutline_bbox_image_path(
     return get_chunk_debug_dir(job_id, lesson_name, chunk_name) / "bbox.png"
 
 
-def get_chunk_cutline_apply_json_path(
-    job_id: str,
-    lesson_name: str,
-    chunk_name: str,
-) -> Path:
-    return get_chunk_debug_dir(job_id, lesson_name, chunk_name) / "cutline_apply.json"
-
-
 def get_chunk_cutline_promote_json_path(
     job_id: str,
     lesson_name: str,
     chunk_name: str,
 ) -> Path:
     return get_chunk_debug_dir(job_id, lesson_name, chunk_name) / "cutline_promote.json"
+
+
+def get_lesson_cutline_full_json_path(job_id: str, lesson_name: str) -> Path:
+    return get_chunk_lesson_debug_dir(job_id, lesson_name) / "lesson_cutline_full.json"
 
 
 def get_chunk_cutline_request_dir(

@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.schemas.extraction import ChunkCutlinePromoteResponse
 from app.services.extraction.job_service import get_job
 from app.services.storage.workspace_service import (
     get_chunk_cutline_json_path,
     get_chunk_cutline_page_image_path,
     get_chunk_cutline_promote_json_path,
-    get_chunk_doc_backup_pdf_path,
     get_chunk_json_path,
     get_chunk_pdf_path,
     get_lesson_doc_path,
@@ -22,7 +20,19 @@ from app.services.storage.workspace_service import (
 MIN_MATCH_REQUIRED = 3
 
 
-class ChunkCutlinePromoteInputError(ValueError):
+@dataclass(frozen=True)
+class InternalPromoteResult:
+    job_id: str
+    lesson_name: str
+    selected_chunk: str
+    previous_chunk: str | None
+    promoted: bool
+    selected_chunk_pdf: str
+    previous_chunk_pdf: str | None
+    debug_promote_json_path: str
+
+
+class InternalPromoteInputError(ValueError):
     pass
 
 
@@ -30,7 +40,7 @@ def promote_cutline_for_chunk(
     job_id: str,
     lesson_name: str,
     chunk_name: str,
-) -> ChunkCutlinePromoteResponse:
+) -> InternalPromoteResult:
     get_job(job_id)
 
     lesson_pdf_path = get_lesson_doc_path(job_id, lesson_name)
@@ -49,7 +59,7 @@ def promote_cutline_for_chunk(
     cutline = _read_object(cutline_json_path, "cutline result")
 
     if not bool(cutline.get("matched")):
-        raise ChunkCutlinePromoteInputError("Cutline result must have matched=true.")
+        raise InternalPromoteInputError("Cutline result must have matched=true.")
 
     y_cut = _required_number(cutline, "y_cut")
     selected_start = _required_int(selected_chunk, "start")
@@ -57,11 +67,11 @@ def promote_cutline_for_chunk(
     page_number = _required_int(cutline, "page_number")
 
     if page_number != selected_start:
-        raise ChunkCutlinePromoteInputError(
+        raise InternalPromoteInputError(
             f"Cutline page_number={page_number} does not match selected chunk start={selected_start}."
         )
 
-    _validate_cutline_confidence(cutline)
+    validate_cutline_confidence(cutline)
 
     image_height = _get_image_height(
         cutline=cutline,
@@ -69,18 +79,12 @@ def promote_cutline_for_chunk(
     )
 
     selected_output_path = get_chunk_pdf_path(job_id, lesson_name, chunk_name)
-    selected_backup_path: Path | None = None
 
     previous_chunk_name: str | None = None
     previous_output_path: Path | None = None
-    previous_backup_path: Path | None = None
     previous_start: int | None = None
 
     if _is_first_chunk(chunk_name=chunk_name, selected_chunk=selected_chunk):
-        selected_backup_path = _backup_official_pdf(
-            source_path=selected_output_path,
-            backup_path=get_chunk_doc_backup_pdf_path(job_id, lesson_name, chunk_name),
-        )
         metrics = _write_selected_official_pdf(
             source_pdf=lesson_pdf_path,
             selected_output_pdf=selected_output_path,
@@ -91,7 +95,7 @@ def promote_cutline_for_chunk(
         )
     else:
         if not bool(selected_chunk.get("content_head")):
-            raise ChunkCutlinePromoteInputError(
+            raise InternalPromoteInputError(
                 "Selected chunk does not have content_head=true; official page-range doc is already sufficient."
             )
 
@@ -103,14 +107,6 @@ def promote_cutline_for_chunk(
         previous_chunk = _read_object(previous_chunk_path, "previous chunk")
         previous_start = _required_int(previous_chunk, "start")
         previous_output_path = get_chunk_pdf_path(job_id, lesson_name, previous_chunk_name)
-        selected_backup_path = _backup_official_pdf(
-            source_path=selected_output_path,
-            backup_path=get_chunk_doc_backup_pdf_path(job_id, lesson_name, chunk_name),
-        )
-        previous_backup_path = _backup_official_pdf(
-            source_path=previous_output_path,
-            backup_path=get_chunk_doc_backup_pdf_path(job_id, lesson_name, previous_chunk_name),
-        )
 
         metrics = _write_previous_and_selected_official_pdfs(
             source_pdf=lesson_pdf_path,
@@ -139,27 +135,16 @@ def promote_cutline_for_chunk(
         "image_height": image_height,
         "pdf_page_height": metrics["pdf_page_height"],
         "y_cut_pdf": metrics["y_cut_pdf"],
-        "match_score": cutline.get("match_score"),
-        "matched_prefix": cutline.get("matched_prefix"),
-        "expected_len": cutline.get("expected_len"),
-        "match_ratio": cutline.get("match_ratio"),
-        "best_mode": cutline.get("best_mode"),
-        "weak_cut": cutline.get("weak_cut"),
-        "force_cut": cutline.get("force_cut"),
-        "early_stop": cutline.get("early_stop"),
         "official_outputs": {
             "previous_chunk_pdf": str(previous_output_path) if previous_output_path else None,
             "selected_chunk_pdf": str(selected_output_path),
         },
-        "backups": {
-            "previous_chunk_backup": str(previous_backup_path) if previous_backup_path else None,
-            "selected_chunk_backup": str(selected_backup_path) if selected_backup_path else None,
-        },
         "promoted": True,
+        "backup_created": False,
     }
     write_json(debug_promote_json_path, debug_payload)
 
-    return ChunkCutlinePromoteResponse(
+    return InternalPromoteResult(
         job_id=job_id,
         lesson_name=lesson_name,
         selected_chunk=chunk_name,
@@ -185,7 +170,7 @@ def _write_previous_and_selected_official_pdfs(
     import fitz
 
     if image_height <= 0:
-        raise ChunkCutlinePromoteInputError("image_height must be greater than 0.")
+        raise InternalPromoteInputError("image_height must be greater than 0.")
 
     source_doc = fitz.open(str(source_pdf))
     try:
@@ -242,7 +227,7 @@ def _write_selected_official_pdf(
     import fitz
 
     if image_height <= 0:
-        raise ChunkCutlinePromoteInputError("image_height must be greater than 0.")
+        raise InternalPromoteInputError("image_height must be greater than 0.")
 
     source_doc = fitz.open(str(source_pdf))
     try:
@@ -312,11 +297,11 @@ def _get_cutline_metrics(
 
     for page_number in pages_to_check:
         if page_number < 1 or page_number > total_pages:
-            raise ChunkCutlinePromoteInputError(
+            raise InternalPromoteInputError(
                 f"Page {page_number} is outside lesson PDF page count {total_pages}."
             )
     if selected_end < selected_start:
-        raise ChunkCutlinePromoteInputError("Selected chunk end page must be greater than or equal to start page.")
+        raise InternalPromoteInputError("Selected chunk end page must be greater than or equal to start page.")
 
     source_page = source_doc[selected_start - 1]
     page_rect = source_page.rect
@@ -335,9 +320,9 @@ def convert_y_cut_image_to_pdf(
     pdf_page_height: float,
 ) -> float:
     if image_height <= 0:
-        raise ChunkCutlinePromoteInputError("image_height must be greater than 0.")
+        raise InternalPromoteInputError("image_height must be greater than 0.")
     if pdf_page_height <= 0:
-        raise ChunkCutlinePromoteInputError("pdf_page_height must be greater than 0.")
+        raise InternalPromoteInputError("pdf_page_height must be greater than 0.")
 
     y_cut_pdf = y_cut_image * pdf_page_height / image_height
     return max(0.0, min(float(y_cut_pdf), float(pdf_page_height)))
@@ -351,7 +336,7 @@ def _append_cropped_page(
     crop_rect: Any,
 ) -> None:
     if crop_rect.height <= 0 or crop_rect.width <= 0:
-        raise ChunkCutlinePromoteInputError("Cutline crop produced an empty page region.")
+        raise InternalPromoteInputError("Cutline crop produced an empty page region.")
 
     page = source_doc[page_index]
     original_crop = page.cropbox
@@ -377,17 +362,7 @@ def _atomic_save_pdf(doc: Any, output_pdf: Path) -> None:
             temp_pdf.unlink()
 
 
-def _backup_official_pdf(*, source_path: Path, backup_path: Path) -> Path | None:
-    if not source_path.exists():
-        return None
-
-    backup_path.parent.mkdir(parents=True, exist_ok=True)
-    if not backup_path.exists():
-        shutil.copyfile(source_path, backup_path)
-    return backup_path
-
-
-def _validate_cutline_confidence(cutline: dict[str, Any]) -> None:
+def validate_cutline_confidence(cutline: dict[str, Any]) -> None:
     if bool(cutline.get("force_cut")) or bool(cutline.get("weak_cut")):
         return
 
@@ -399,7 +374,7 @@ def _validate_cutline_confidence(cutline: dict[str, Any]) -> None:
     if match_ratio is not None and match_ratio >= 0.5:
         return
 
-    raise ChunkCutlinePromoteInputError("Cutline confidence is too low to promote safely.")
+    raise InternalPromoteInputError("Cutline confidence is too low to promote safely.")
 
 
 def _get_image_height(*, cutline: dict[str, Any], page_image_path: Path) -> int:
@@ -423,6 +398,10 @@ def _get_image_height(*, cutline: dict[str, Any], page_image_path: Path) -> int:
         return int(image.height)
 
 
+def get_cutline_image_height(*, cutline: dict[str, Any], page_image_path: Path) -> int:
+    return _get_image_height(cutline=cutline, page_image_path=page_image_path)
+
+
 def _is_first_chunk(*, chunk_name: str, selected_chunk: dict[str, Any]) -> bool:
     return chunk_name == "chunk_01" or bool(selected_chunk.get("first_chunk"))
 
@@ -430,14 +409,14 @@ def _is_first_chunk(*, chunk_name: str, selected_chunk: dict[str, Any]) -> bool:
 def _previous_chunk_name(chunk_name: str) -> str:
     match = __import__("re").match(r"^chunk_(\d+)$", chunk_name)
     if not match:
-        raise ChunkCutlinePromoteInputError(
+        raise InternalPromoteInputError(
             f"Chunk name must use format chunk_XX: {chunk_name}"
         )
 
     number_text = match.group(1)
     number = int(number_text)
     if number <= 1:
-        raise ChunkCutlinePromoteInputError("chunk_01 has no previous chunk.")
+        raise InternalPromoteInputError("chunk_01 has no previous chunk.")
 
     return f"chunk_{number - 1:0{len(number_text)}d}"
 
@@ -445,7 +424,7 @@ def _previous_chunk_name(chunk_name: str) -> str:
 def _read_object(path: Path, label: str) -> dict[str, Any]:
     payload = read_json(path)
     if not isinstance(payload, dict):
-        raise ChunkCutlinePromoteInputError(f"{label} JSON must contain an object: {path}")
+        raise InternalPromoteInputError(f"{label} JSON must contain an object: {path}")
     return payload
 
 
@@ -453,14 +432,14 @@ def _required_int(payload: dict[str, Any], field: str) -> int:
     value = payload.get(field)
     parsed = _optional_int(value)
     if parsed is None:
-        raise ChunkCutlinePromoteInputError(f"Required integer field is missing: {field}")
+        raise InternalPromoteInputError(f"Required integer field is missing: {field}")
     return parsed
 
 
 def _required_number(payload: dict[str, Any], field: str) -> float:
     value = _optional_float(payload.get(field))
     if value is None:
-        raise ChunkCutlinePromoteInputError(f"Required numeric field is missing: {field}")
+        raise InternalPromoteInputError(f"Required numeric field is missing: {field}")
     return value
 
 
@@ -483,7 +462,9 @@ def _optional_float(value: Any) -> float | None:
 
 
 __all__ = [
-    "ChunkCutlinePromoteInputError",
+    "InternalPromoteInputError",
     "convert_y_cut_image_to_pdf",
+    "get_cutline_image_height",
     "promote_cutline_for_chunk",
+    "validate_cutline_confidence",
 ]
