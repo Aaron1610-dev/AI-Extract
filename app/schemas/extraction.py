@@ -40,19 +40,9 @@ class TopicListRequest(BaseModel):
 
 class TopicExtractionResponse(BaseModel):
     job_id: str
-    status: ExtractionJobStatus
-    topics: list[TopicItem]
-    topics_path: str
-    source: str | None = None
-    total_pdf_pages: int | None = None
-    extraction_input: str | None = None
-    front_matter_pdf_path: str | None = None
-    fallback_used: bool | None = None
+    status: str
     offset: int | None = None
-    offset_detection: dict | None = None
-    topic_raw_path: str | None = None
-    lesson_raw_path: str | None = None
-    split_result: dict | None = None
+    topics: list[TopicItem]
 
 
 class TopicReviewResponse(BaseModel):

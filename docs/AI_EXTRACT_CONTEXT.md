@@ -91,6 +91,27 @@ Query params:
 - `offset`: mặc định `auto`; nhận `auto`, `none`, hoặc số nguyên dạng chuỗi như `0`, `1`, `4`.
 - `split_pdf`: mặc định `true`.
 
+Public response của endpoint này được giữ nhỏ để frontend/review dùng trực tiếp:
+
+```json
+{
+  "job_id": "...",
+  "status": "reviewing_topics",
+  "offset": 2,
+  "topics": [
+    {
+      "name": "topic_01",
+      "start": 8,
+      "end": 19,
+      "heading": "CHỦ ĐỀ 1:",
+      "title": "TĂNG TRƯỞNG VÀ PHÁT TRIỂN KINH TẾ"
+    }
+  ]
+}
+```
+
+Các dữ liệu debug/internal như Gemini raw response, raw payload, offset detection chi tiết, split result, `front_matter_pdf_path`, `fallback_used` và internal paths không trả trong HTTP response. Chúng được lưu trong `topic/topic_raw.json`.
+
 Approve topics tạo:
 
 ```text
@@ -304,6 +325,7 @@ POST /api/extract/jobs/{job_id}/topics/extract?offset=auto&split_pdf=true
 -> normalize start/end
 -> split original.pdf into topic/doc and lesson/doc
 -> create topic_raw.json, topics.json, lesson_raw.json
+-> return slim response: job_id, status, offset, topics
 -> status = reviewing_topics
 
 GET/PUT /api/extract/jobs/{job_id}/topics
@@ -374,6 +396,9 @@ Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuy
 - Thêm `topic/front_matter.pdf`.
 - Thêm logic tính `end_printed` từ `start_printed`.
 - Giữ full PDF extraction làm fallback.
+- Simplify public Topic extraction response còn `job_id`, `status`, `offset`, `topics`.
+- Giữ full debug/internal extraction data trong `topic/topic_raw.json`.
+- Không đổi route path hoặc extraction behavior khi simplify response.
 - Cập nhật tài liệu cho workflow Topic/Lesson extraction hiện tại:
   - `front_matter.pdf` chỉ dùng làm Gemini input để lấy cấu trúc sách.
   - `original.pdf` là nguồn cắt final topic/lesson PDFs.

@@ -109,19 +109,9 @@ def extract_topics(
 
     return TopicExtractionResponse(
         job_id=job_id,
-        status=job.status,
-        topics=topic_items,
-        topics_path=str(topics_path),
-        source="gemini",
-        total_pdf_pages=result.get("total_pdf_pages"),
-        extraction_input=result.get("extraction_input"),
-        front_matter_pdf_path=result.get("front_matter_pdf_path"),
-        fallback_used=result.get("fallback_used"),
         offset=result.get("offset"),
-        offset_detection=result.get("offset_detection"),
-        topic_raw_path=str(topic_raw_path),
-        lesson_raw_path=str(lesson_raw_path),
-        split_result=result.get("split_result"),
+        status=job.status.value,
+        topics=topic_items,
     )
 
 
