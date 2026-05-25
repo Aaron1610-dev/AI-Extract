@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.pipeline.gemini_extract.prompts.keyword_prompt import build_keyword_prompt
+from app.pipeline.gemini_extract.prompts.keyword_prompt import (
+    build_keyword_prompt,
+    build_keyword_retry_prompt,
+)
 from app.schemas.extraction import LessonKeywordDebugResponse
 from app.services.extraction.job_service import get_job
 from app.services.gemini.client import generate_with_pdf
@@ -22,9 +25,14 @@ from app.utils.json_utils import extract_json, normalize_for_compare
 
 SINGLE_CHUNK_KEYWORD_COUNT = 10
 MULTI_CHUNK_KEYWORD_COUNT = 5
+MAX_KEYWORD_RETRIES = 3
 
 
 class KeywordDebugInputError(ValueError):
+    pass
+
+
+class KeywordExtractionCountError(RuntimeError):
     pass
 
 
@@ -78,7 +86,7 @@ def extract_keywords_for_lesson_debug(
                 }
             )
 
-    results: list[dict[str, Any]] = []
+    pending_results: list[tuple[Path, dict[str, Any]]] = []
     for source in sources:
         keyword_count = int(source["keyword_count"])
         normalized = _extract_source_keywords(
@@ -90,16 +98,17 @@ def extract_keywords_for_lesson_debug(
             model=model,
         )
         keyword_path = Path(source["keyword_path"])
-        write_json(keyword_path, normalized)
+        pending_results.append((keyword_path, normalized))
 
-        results.append(
-            {
-                "chunk_name": normalized["chunk_name"],
-                "keyword_count": normalized["keyword_count"],
-                "keywords": normalized["keywords"],
-                "keyword_path": str(keyword_path),
-            }
-        )
+    results: list[dict[str, Any]] = []
+    for keyword_path, normalized in pending_results:
+        write_json(keyword_path, normalized)
+        results.append({
+            "chunk_name": normalized["chunk_name"],
+            "keyword_count": normalized["keyword_count"],
+            "keywords": normalized["keywords"],
+            "keyword_path": str(keyword_path),
+        })
 
     return LessonKeywordDebugResponse(
         job_id=job_id,
@@ -129,11 +138,47 @@ def _extract_source_keywords(
         model=model,
     )
     parsed = extract_json(raw_response_text)
-    return normalize_keyword_payload(
-        payload=parsed,
-        chunk_name=chunk_name,
-        keyword_count=keyword_count,
-    )
+    keywords = _normalize_keywords(parsed.get("keywords") if isinstance(parsed, dict) else [])
+    if len(keywords) >= keyword_count:
+        keywords = keywords[:keyword_count]
+        return {
+            "chunk_name": chunk_name,
+            "keyword_count": keyword_count,
+            "keywords": keywords,
+        }
+
+    for _attempt in range(MAX_KEYWORD_RETRIES):
+        if len(keywords) == keyword_count:
+            break
+
+        retry_prompt = build_keyword_retry_prompt(
+            keyword_limit=keyword_count,
+            source_type=source_type,
+            source_title=source_title,
+            existing_keywords=[item["keyword_name"] for item in keywords],
+        )
+        retry_response_text = generate_with_pdf(
+            prompt=retry_prompt,
+            pdf_path=source_pdf,
+            model=model,
+        )
+        retry_parsed = extract_json(retry_response_text)
+        retry_keywords = _normalize_keywords(
+            retry_parsed.get("keywords") if isinstance(retry_parsed, dict) else []
+        )
+        keywords = _merge_keywords(keywords, retry_keywords, keyword_count)
+
+    if len(keywords) != keyword_count:
+        raise KeywordExtractionCountError(
+            f"Keyword extraction failed: expected exactly {keyword_count} keywords for {chunk_name}, "
+            f"got {len(keywords)} after retries."
+        )
+
+    return {
+        "chunk_name": chunk_name,
+        "keyword_count": keyword_count,
+        "keywords": keywords,
+    }
 
 
 def normalize_keyword_payload(
@@ -142,9 +187,22 @@ def normalize_keyword_payload(
     chunk_name: str,
     keyword_count: int,
 ) -> dict[str, Any]:
-    raw_keywords = payload.get("keywords") if isinstance(payload, dict) else []
+    keywords = _normalize_keywords(payload.get("keywords") if isinstance(payload, dict) else [])[:keyword_count]
+    if len(keywords) != keyword_count:
+        raise KeywordExtractionCountError(
+            f"Keyword extraction failed: expected exactly {keyword_count} keywords for {chunk_name}, "
+            f"got {len(keywords)}."
+        )
+    return {
+        "chunk_name": chunk_name,
+        "keyword_count": keyword_count,
+        "keywords": keywords,
+    }
+
+
+def _normalize_keywords(raw_keywords: Any) -> list[dict[str, str]]:
     if not isinstance(raw_keywords, list):
-        raw_keywords = []
+        return []
 
     keywords: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -167,14 +225,29 @@ def normalize_keyword_payload(
 
         seen.add(key)
         keywords.append({"keyword_name": keyword})
-        if len(keywords) >= keyword_count:
+
+    return keywords
+
+
+def _merge_keywords(
+    existing_keywords: list[dict[str, str]],
+    new_keywords: list[dict[str, str]],
+    target_count: int,
+) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for item in [*existing_keywords, *new_keywords]:
+        keyword = item.get("keyword_name", "").strip()
+        key = normalize_for_compare(keyword)
+        if not keyword or not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append({"keyword_name": keyword})
+        if len(merged) >= target_count:
             break
 
-    return {
-        "chunk_name": chunk_name,
-        "keyword_count": keyword_count,
-        "keywords": keywords,
-    }
+    return merged
 
 
 def _get_approved_lesson(*, job_id: str, lesson_name: str) -> dict[str, Any]:
@@ -228,6 +301,7 @@ def _chunk_sort_key(chunk_name: str) -> tuple[int, str]:
 
 
 __all__ = [
+    "KeywordExtractionCountError",
     "KeywordDebugInputError",
     "extract_keywords_for_lesson_debug",
     "normalize_keyword_payload",

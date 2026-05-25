@@ -700,8 +700,8 @@ Full lesson rebuild không tạo thêm PDF folder, không tạo preview/backup f
 
 Keyword post-processing của `/cutline/full` dùng chung service với endpoint keyword debug:
 
-- One-chunk lesson: dùng `lesson/doc/{lesson_name}.pdf`, extract 10 keywords, ghi `chunk/{lesson_name}/keyword/keyword_chunk_01.json`.
-- Multi-chunk lesson: dùng các finalized `chunk/{lesson_name}/doc/chunk_*.pdf`, extract 5 keywords/chunk, ghi `chunk/{lesson_name}/keyword/keyword_chunk_*.json`.
+- One-chunk lesson: dùng `lesson/doc/{lesson_name}.pdf`, bắt buộc đúng 10 keywords, ghi `chunk/{lesson_name}/keyword/keyword_chunk_01.json`.
+- Multi-chunk lesson: dùng các finalized `chunk/{lesson_name}/doc/chunk_*.pdf`, bắt buộc đúng 5 keywords/chunk, ghi `chunk/{lesson_name}/keyword/keyword_chunk_*.json`.
 - Summary `lesson_cutline_full.json` có `keyword_extracted`, `keyword_paths`, và nếu lỗi thì có `keyword_error`.
 
 ### Keyword extraction debug cho một lesson
@@ -724,8 +724,10 @@ workspace/outputs/{job_id}/chunk/{lesson_name}/chunk_*.json
 
 Rule theo old thesis keyword extraction:
 
-- Nếu lesson chỉ có đúng 1 chunk: dùng full lesson PDF `lesson/doc/{lesson_name}.pdf` và extract 10 keywords cho cả lesson.
-- Nếu lesson có nhiều chunk: dùng từng finalized chunk PDF trong `chunk/{lesson_name}/doc/chunk_*.pdf` và extract 5 keywords cho mỗi chunk.
+- Nếu lesson chỉ có đúng 1 chunk: dùng full lesson PDF `lesson/doc/{lesson_name}.pdf` và bắt buộc đúng 10 keywords cho cả lesson.
+- Nếu lesson có nhiều chunk: dùng từng finalized chunk PDF trong `chunk/{lesson_name}/doc/chunk_*.pdf` và bắt buộc đúng 5 keywords cho mỗi chunk.
+- Nếu Gemini trả ít hơn target, service retry tối đa 3 lần, mỗi lần yêu cầu bổ sung số keyword còn thiếu và không lặp keyword đã có.
+- Nếu sau retries vẫn thiếu keyword, endpoint fail và không ghi file keyword incomplete cho lần chạy đó.
 
 Output folder:
 
@@ -759,6 +761,8 @@ Không tạo `keywords_summary.json` và không ghi raw keyword files. Mỗi fil
   ]
 }
 ```
+
+`keyword_count` là target cố định và luôn bằng `len(keywords)` trong file: 10 cho one-chunk lesson, 5 cho mỗi chunk trong multi-chunk lesson.
 
 ## 13. Scripts cleanup note
 
@@ -828,7 +832,7 @@ Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuy
 - Full-lesson cutline detect tất cả required boundaries trước, fail thì không rebuild PDFs, success thì rebuild toàn bộ `chunk/{lesson_name}/doc/chunk_*.pdf` trong một pass từ `lesson/doc/{lesson_name}.pdf`; không xử lý all lessons và không batch toàn cục.
 - Full-lesson cutline success tự chạy keyword extraction cho cùng lesson sau khi PDFs đã rebuild; nếu keyword lỗi thì giữ PDFs đã cập nhật và trả `completed_with_keyword_error`.
 - Thêm keyword extraction debug endpoint cho một selected lesson: `POST /api/extract/jobs/{job_id}/keywords/debug/lesson/{lesson_name}/extract`.
-- Keyword extraction giữ file-based review output trong `chunk/{lesson_name}/keyword/keyword_chunk_*.json`: một chunk dùng lesson PDF và 10 keywords, nhiều chunk dùng từng finalized chunk PDF và 5 keywords/chunk; chưa thêm DB/object-storage/import logic.
+- Keyword extraction giữ file-based review output trong `chunk/{lesson_name}/keyword/keyword_chunk_*.json`: một chunk dùng lesson PDF và bắt buộc 10 keywords, nhiều chunk dùng từng finalized chunk PDF và bắt buộc 5 keywords/chunk; retry tối đa 3 lần nếu Gemini trả thiếu, fail nếu vẫn thiếu; chưa thêm DB/object-storage/import logic.
 - Cập nhật tài liệu cho workflow Topic/Lesson extraction hiện tại:
   - `front_matter.pdf` chỉ dùng làm Gemini input để lấy cấu trúc sách.
   - `original.pdf` là nguồn cắt final topic/lesson PDFs.
