@@ -1,7 +1,6 @@
 """Manual Topic extraction runner for future API integration.
 
-This module is intentionally not wired into ``topic_service`` yet.
-The current Topic API still uses the stub implementation.
+This module is used by ``topic_service`` for real Topic extraction.
 """
 
 from __future__ import annotations

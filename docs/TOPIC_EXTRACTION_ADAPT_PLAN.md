@@ -20,7 +20,7 @@ File đã kiểm tra:
 - Key rotation qua `GeminiRotationPool`.
 - Debug rotation status qua `get_gemini_rotation_status()`.
 
-`generate_text(...)` vẫn giữ behavior cũ cho keyword APIs. `generate_with_pdf(...)` đã được thêm ở Step 4A, nhưng chưa được wire vào Topic extraction.
+`generate_text(...)` vẫn giữ behavior cũ cho keyword APIs. `generate_with_pdf(...)` đã được thêm ở Step 4A và hiện đã được dùng bởi Topic extract API thông qua `run_topic_extraction(...)`.
 
 Dependency hiện có:
 
@@ -47,10 +47,10 @@ Các helper nền đã có:
 
 `run_topic_extraction(...)` đã được implement để test thủ công. Runner này gọi `generate_with_pdf(...)`, parse JSON, có thể tự detect offset, normalize topics/lessons, và có thể split PDF nếu truyền `split_pdf=True`.
 
-Các phần còn thiếu trước khi thay Topic stub:
+Các phần còn cần kiểm tra sau khi thay Topic stub:
 
 - Manual test với một PDF sách thật.
-- Service integration trong `topic_service.py`.
+- Độ ổn định của `offset=auto` trên nhiều sách.
 
 Auto offset detection đã được adapt từ `FastAPI-Khoa-Luan/gemini_pipeline`: tạo single-page verification PDFs quanh trang in bắt đầu của topic đầu tiên đáng tin cậy, hỏi Gemini bằng verify prompt, rồi tính `offset = actual_page - start_printed`.
 
@@ -70,13 +70,13 @@ Preview PDF creation vẫn cố ý chưa được implement trong AI-Extract. Au
 - Có `detect_page_offset(...)`.
 - Dùng `make_single_page_pdf(...)`, `build_topic_verify_prompt(...)`, `generate_with_pdf(...)`, và `parse_json_loose(...)`.
 - Reuse Gemini key rotation vì đi qua AI-Extract `generate_with_pdf(...)`.
-- Chỉ dùng trong manual runner, chưa wire vào API.
+- Được dùng bởi `run_topic_extraction(...)`; Topic API gọi runner này.
 
 `app/services/extraction/topic_service.py`
 
-- Vẫn đang dùng Topic stub.
-- Sau này mới thay stub bằng `topic_runner`.
-- Vẫn chịu trách nhiệm job-level orchestration và ghi file workspace.
+- Đã gọi `run_topic_extraction(...)` cho public endpoint `POST /api/extract/jobs/{job_id}/topics/extract`.
+- Vẫn chịu trách nhiệm job-level orchestration, ghi file workspace và cập nhật status.
+- Không còn public `engine=stub` hoặc engine switch.
 
 `app/pipeline/gemini_extract/pdf_utils.py`
 
@@ -87,7 +87,7 @@ Preview PDF creation vẫn cố ý chưa được implement trong AI-Extract. Au
 
 ## 4. Flow Topic thật đề xuất
 
-Flow đề xuất khi thay Topic stub:
+Flow hiện tại của Topic extract API:
 
 1. Đọc PDF gốc:
    - `workspace/uploads/{job_id}/original.pdf`
@@ -138,11 +138,11 @@ Shape đề xuất cho `topic/topic_raw.json`:
 
 Bước nhỏ nhất tiếp theo:
 
-1. Chạy manual runner trên một PDF thật với `--offset auto`.
+1. Test API thật trên một PDF qua Swagger với `offset=auto&split_pdf=true`.
 2. Kiểm tra `offset_detection.detected`, `offset`, và file PDF split ở `topic/doc/`, `lesson/doc/`.
-3. Nếu kết quả ổn định, mới cân nhắc wire runner vào `topic_service.py`.
+3. Sau khi topic review ổn định, dùng flow approve topics rồi chạy lesson range-overlap như hiện tại.
 
-Topic API hiện vẫn dùng stub. Không có real Topic extraction nào được wire ở Step 4B.
+Topic API hiện đã gọi Gemini trực tiếp. Không có `engine=stub` mode.
 
 ## 7. Manual test runner
 
@@ -173,4 +173,27 @@ Lưu ý:
 - Nếu dùng `--split-pdf`, output PDF sẽ nằm trong:
   - `workspace/outputs/{job_id}/topic/doc/`
   - `workspace/outputs/{job_id}/lesson/doc/`
-- Topic API hiện vẫn dùng stub; runner chưa được wire vào route.
+- Topic API hiện đã dùng runner thật; command manual vẫn hữu ích để debug ngoài API.
+
+## 8. Topic API integration
+
+Endpoint đã gọi Gemini trực tiếp:
+
+```text
+POST /api/extract/jobs/{job_id}/topics/extract?offset=auto&split_pdf=true
+```
+
+Query params:
+
+- `offset`: mặc định `auto`; nhận `auto`, `none`, hoặc chuỗi số nguyên như `0`, `1`, `4`.
+- `split_pdf`: mặc định `true`.
+
+Output chính:
+
+- `workspace/outputs/{job_id}/topic/topic_raw.json`
+- `workspace/outputs/{job_id}/topic/topics.json`
+- `workspace/outputs/{job_id}/lesson/lesson_raw.json`
+- `workspace/outputs/{job_id}/topic/doc/*.pdf` nếu `split_pdf=true`
+- `workspace/outputs/{job_id}/lesson/doc/*.pdf` nếu `split_pdf=true`
+
+Lesson API vẫn dùng range-overlap từ `topic/topics_approved.json` và `lesson/lesson_raw.json`. Chưa có Gemini Lesson extraction.

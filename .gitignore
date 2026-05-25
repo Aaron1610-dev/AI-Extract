@@ -6,6 +6,7 @@ __pycache__/
 app/core/config.env
 app/core/gemini_rotation_state.json
 
+wordspace
 workspace/uploads/*
 !workspace/uploads/.gitkeep
 

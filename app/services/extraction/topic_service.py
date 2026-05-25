@@ -7,8 +7,10 @@ from app.schemas.extraction import (
     TopicItem,
     TopicReviewResponse,
 )
+from app.pipeline.gemini_extract.topic_runner import run_topic_extraction
 from app.services.extraction.job_service import get_job, update_job_status
 from app.services.storage.workspace_service import (
+    get_job_output_dir,
     get_lesson_raw_json_path,
     get_original_pdf_path,
     get_topic_raw_json_path,
@@ -17,34 +19,6 @@ from app.services.storage.workspace_service import (
     read_json,
     write_json,
 )
-
-
-_STUB_TOPICS = [
-    {
-        "name": "topic_01",
-        "start": 1,
-        "end": 5,
-        "heading": "CHỦ ĐỀ 1.",
-        "title": "CHỦ ĐỀ MẪU",
-    }
-]
-
-_STUB_RAW_LESSONS = [
-    {
-        "name": "lesson_01",
-        "start": 1,
-        "end": 3,
-        "heading": "Bài 1.",
-        "title": "BÀI HỌC MẪU 1",
-    },
-    {
-        "name": "lesson_02",
-        "start": 4,
-        "end": 5,
-        "heading": "Bài 2.",
-        "title": "BÀI HỌC MẪU 2",
-    },
-]
 
 
 def _topic_items_from_payload(payload: list[dict]) -> list[TopicItem]:
@@ -63,7 +37,12 @@ def _read_topics_or_404(job_id: str) -> list[TopicItem]:
     return _topic_items_from_payload(topics)
 
 
-def extract_topics_stub(job_id: str) -> TopicExtractionResponse:
+def extract_topics(
+    job_id: str,
+    offset: str | int | None = "auto",
+    split_pdf: bool = True,
+    model: str | None = None,
+) -> TopicExtractionResponse:
     get_job(job_id)
 
     original_pdf_path = get_original_pdf_path(job_id)
@@ -75,27 +54,68 @@ def extract_topics_stub(job_id: str) -> TopicExtractionResponse:
     topic_raw_path = get_topic_raw_json_path(job_id)
     topics_path = get_topics_json_path(job_id)
     lesson_raw_path = get_lesson_raw_json_path(job_id)
+    output_root = get_job_output_dir(job_id)
+
+    try:
+        result = run_topic_extraction(
+            pdf_path=original_pdf_path,
+            model=model,
+            offset=offset,
+            split_pdf=split_pdf,
+            output_root=output_root,
+        )
+    except Exception:
+        update_job_status(job_id, ExtractionJobStatus.ERROR)
+        raise
+
+    topics = result.get("topics")
+    lessons = result.get("lessons")
+
+    if not isinstance(topics, list):
+        update_job_status(job_id, ExtractionJobStatus.ERROR)
+        raise ValueError("Topic extraction did not return a topics list.")
+
+    if not isinstance(lessons, list):
+        update_job_status(job_id, ExtractionJobStatus.ERROR)
+        raise ValueError("Topic extraction did not return a lessons list.")
+
+    try:
+        topic_items = _topic_items_from_payload(topics)
+    except Exception:
+        update_job_status(job_id, ExtractionJobStatus.ERROR)
+        raise
 
     raw_payload = {
         "job_id": job_id,
-        "source": "stub",
-        "topics": _STUB_TOPICS,
-        "lessons": _STUB_RAW_LESSONS,
+        "source": "gemini",
+        "total_pdf_pages": result.get("total_pdf_pages"),
+        "offset": result.get("offset"),
+        "offset_detection": result.get("offset_detection"),
+        "topics": topics,
+        "lessons": lessons,
+        "raw_response_text": result.get("raw_response_text"),
+        "raw_payload": result.get("raw_payload"),
+        "split_result": result.get("split_result"),
     }
 
     write_json(topic_raw_path, raw_payload)
-    write_json(topics_path, _STUB_TOPICS)
-    write_json(lesson_raw_path, _STUB_RAW_LESSONS)
+    write_json(topics_path, topics)
+    write_json(lesson_raw_path, lessons)
 
     job = update_job_status(job_id, ExtractionJobStatus.REVIEWING_TOPICS)
 
     return TopicExtractionResponse(
         job_id=job_id,
         status=job.status,
-        topics=_topic_items_from_payload(_STUB_TOPICS),
+        topics=topic_items,
         topics_path=str(topics_path),
+        source="gemini",
+        total_pdf_pages=result.get("total_pdf_pages"),
+        offset=result.get("offset"),
+        offset_detection=result.get("offset_detection"),
         topic_raw_path=str(topic_raw_path),
         lesson_raw_path=str(lesson_raw_path),
+        split_result=result.get("split_result"),
     )
 
 

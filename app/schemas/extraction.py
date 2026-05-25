@@ -43,8 +43,13 @@ class TopicExtractionResponse(BaseModel):
     status: ExtractionJobStatus
     topics: list[TopicItem]
     topics_path: str
+    source: str | None = None
+    total_pdf_pages: int | None = None
+    offset: int | None = None
+    offset_detection: dict | None = None
     topic_raw_path: str | None = None
     lesson_raw_path: str | None = None
+    split_result: dict | None = None
 
 
 class TopicReviewResponse(BaseModel):
