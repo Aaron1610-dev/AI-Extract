@@ -11,7 +11,7 @@ AI-Extract là dịch vụ FastAPI nhẹ để xử lý PDF sách giáo khoa the
 5. Cho phép review/chỉnh sửa JSON bằng API.
 6. Approve topics trước, sau đó build và approve lessons.
 
-AI-Extract được tách khỏi backend luận văn đầy đủ trong `FastAPI-Khoa-Luan`. Repository này không phụ trách database sync, UI review, chunk extraction, Kaggle OCR/cutline, MinIO, MongoDB, PostgreSQL, Neo4j hoặc heavy import/sync.
+AI-Extract được tách khỏi backend luận văn đầy đủ trong `FastAPI-Khoa-Luan`. Repository này không phụ trách database sync, UI review, batch chunk extraction, MinIO, MongoDB, PostgreSQL, Neo4j hoặc heavy import/sync. Kaggle/PaddleOCR hiện chỉ được dùng ở endpoint debug cutline cho một chunk, chưa phải batch pipeline.
 
 ## 2. Kiến trúc source code
 
@@ -472,6 +472,124 @@ Quy tắc:
 
 Endpoint này chỉ dùng để tune prompt và kiểm tra chất lượng chunk extraction an toàn trước khi có batch flow.
 
+### Chunk cutline debug cho một chunk
+
+Stage A tái dùng ý tưởng cũ từ `FastAPI-Khoa-Luan/gemini_pipeline`: dùng Kaggle/PaddleOCR để tìm bbox/dòng OCR của heading chunk và tính `y_cut`. Endpoint này chỉ xử lý đúng một chunk được chọn.
+
+Endpoint:
+
+```text
+POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline
+```
+
+Input bắt buộc:
+
+```text
+workspace/outputs/{job_id}/lesson/doc/{lesson_name}.pdf
+workspace/outputs/{job_id}/chunk/{lesson_name}/{chunk_name}.json
+```
+
+Chunk JSON phải có:
+
+```json
+{
+  "name": "chunk_03",
+  "start": 10,
+  "end": 12,
+  "content_head": true,
+  "heading": "3.",
+  "title": "MỐI QUAN HỆ GIỮA TĂNG TRƯỞNG KINH TẾ VÀ PHÁT TRIỂN BỀN VỮNG"
+}
+```
+
+Behavior:
+
+- Validate job tồn tại.
+- Validate lesson PDF tồn tại.
+- Validate chunk JSON tồn tại và có `start`, `heading`, `title`.
+- Render đúng trang `chunk.start` từ lesson PDF thành PNG, với page number 1-based bên trong lesson PDF.
+- Tạo package debug nhỏ gồm `page.png` và `run_request.json`.
+- Gửi package này qua adapter Kaggle debug-only.
+- Kaggle kernel/command chạy PaddleOCR, group OCR boxes thành dòng, match `heading` + `title`, rồi ghi output JSON/ảnh bbox.
+- Backend đọc output Kaggle và copy artifact về workspace.
+- Không sửa `chunk/{lesson_name}/{chunk_name}.json`.
+- Không sửa `chunk/{lesson_name}/doc/{chunk_name}.pdf`.
+- Không update `job.json` status.
+- Backend AI-Extract không import hoặc chạy `paddleocr`/`paddlepaddle` local.
+- Nếu Kaggle chưa được cấu hình, endpoint trả lỗi cấu hình rõ ràng, không yêu cầu cài PaddleOCR local.
+
+Kaggle adapter hiện được implement trong:
+
+```text
+app/services/kaggle_cutline_debug_service.py
+```
+
+Backend tạo dataset package nhỏ gồm:
+
+```text
+page.png
+run_request.json
+dataset-metadata.json
+```
+
+Sau đó backend ghi kernel package tạm từ source kernel tối thiểu:
+
+```text
+app/pipeline/kaggle_kernels/debug-cutline-one-chunk/script.py
+```
+
+Adapter dùng Kaggle CLI/API flow tương tự project cũ:
+
+- `kaggle datasets version` hoặc `kaggle datasets create` cho package một trang.
+- `kaggle kernels push` để trigger kernel PaddleOCR.
+- Poll `kaggle kernels status`.
+- `kaggle kernels output` để tải output.
+- Validate `request_id` trong `current_run_status_{request_id}.json` và `cutline_result.json` để tránh stale output.
+
+Env cần cấu hình:
+
+```text
+AI_EXTRACT_KAGGLE_USERNAME
+AI_EXTRACT_KAGGLE_KEY
+AI_EXTRACT_KAGGLE_DATASET_SLUG
+AI_EXTRACT_KAGGLE_KERNEL_REF
+AI_EXTRACT_KAGGLE_WORK_DIR
+AI_EXTRACT_KAGGLE_POLL_SECONDS
+AI_EXTRACT_KAGGLE_TIMEOUT_SECONDS
+```
+
+`AI_EXTRACT_KAGGLE_WORK_DIR`, `AI_EXTRACT_KAGGLE_POLL_SECONDS`, `AI_EXTRACT_KAGGLE_TIMEOUT_SECONDS` là optional. Nếu thiếu config bắt buộc, endpoint trả `503`.
+
+Output debug-only:
+
+```text
+workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}_cutline.json
+workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}_page.png
+workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}_bbox.png
+```
+
+Response slim:
+
+```json
+{
+  "job_id": "...",
+  "lesson_name": "lesson_01",
+  "chunk_name": "chunk_03",
+  "matched": true,
+  "page_number": 10,
+  "heading": "3.",
+  "title": "...",
+  "matched_text": "3. ...",
+  "bbox": [120, 345, 980, 390],
+  "y_cut": 345,
+  "debug_json_path": "...",
+  "debug_page_path": "...",
+  "debug_bbox_path": "..."
+}
+```
+
+Nếu không match, endpoint vẫn ghi debug JSON/ảnh và trả `matched=false` với reason nếu Kaggle output hợp lệ. Đây chỉ là Stage A để quan sát cutline; bước sau mới quyết định có áp dụng `y_cut` để recut PDF hay không.
+
 ## 13. Scripts cleanup note
 
 Production OCR offset logic hiện nằm trong:
@@ -522,6 +640,12 @@ Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuy
 - Thêm rule `first_chunk` cho chunk đầu, `content_head` cho các chunk sau, và end calculation dựa trên start của chunk kế tiếp.
 - Giữ prompt chunk debug trực tiếp trong `app/pipeline/gemini_extract/prompts/chunk_prompt.py`; không dùng template file.
 - Debug chunk endpoint không update job status, không tạo batch `chunks.json`, không approve chunks và không implement batch extraction.
+- Thêm Stage A cutline debug endpoint cho đúng một chunk: `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline`.
+- Cutline debug được chỉnh để dùng Kaggle/PaddleOCR thay vì yêu cầu PaddleOCR local trong backend.
+- Backend chỉ render trang `chunk.start` thành PNG, tạo `run_request.json`, tự build/push Kaggle dataset/kernel debug-only và đọc output.
+- Loại bỏ `paddleocr` khỏi backend requirements; AI-Extract backend không import/call PaddleOCR local.
+- Thay placeholder `AI_EXTRACT_KAGGLE_CUTLINE_COMMAND` bằng adapter Kaggle thật dựa trên dataset/kernel/status/output flow của project cũ.
+- Cutline debug không sửa chunk JSON, không sửa chunk PDF, không update job status và không implement batch cutline processing.
 - Cập nhật tài liệu cho workflow Topic/Lesson extraction hiện tại:
   - `front_matter.pdf` chỉ dùng làm Gemini input để lấy cấu trúc sách.
   - `original.pdf` là nguồn cắt final topic/lesson PDFs.

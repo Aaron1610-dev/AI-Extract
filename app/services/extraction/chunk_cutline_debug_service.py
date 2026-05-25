@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+from pathlib import Path
+import shutil
+from typing import Any
+from uuid import uuid4
+
+from app.schemas.extraction import ChunkCutlineDebugResponse
+from app.services.extraction.job_service import get_job
+from app.services.kaggle_cutline_debug_service import (
+    KaggleCutlineDebugNotConfigured,
+    run_kaggle_cutline_debug,
+)
+from app.services.storage.workspace_service import (
+    get_chunk_cutline_bbox_image_path,
+    get_chunk_cutline_json_path,
+    get_chunk_cutline_page_image_path,
+    get_chunk_cutline_request_dir,
+    get_chunk_json_path,
+    get_lesson_doc_path,
+    read_json,
+    write_json,
+)
+
+
+DPI = 260
+
+
+class ChunkCutlineInputError(ValueError):
+    pass
+
+
+def detect_debug_cutline_for_chunk(
+    job_id: str,
+    lesson_name: str,
+    chunk_name: str,
+) -> ChunkCutlineDebugResponse:
+    get_job(job_id)
+
+    lesson_pdf_path = get_lesson_doc_path(job_id, lesson_name)
+    if not lesson_pdf_path.exists():
+        raise FileNotFoundError(f"Lesson PDF was not found: {lesson_pdf_path}")
+
+    chunk_json_path = get_chunk_json_path(job_id, lesson_name, chunk_name)
+    if not chunk_json_path.exists():
+        raise FileNotFoundError(f"Chunk JSON was not found: {chunk_json_path}")
+
+    chunk = read_json(chunk_json_path)
+    if not isinstance(chunk, dict):
+        raise ChunkCutlineInputError(f"Chunk JSON must contain an object: {chunk_json_path}")
+
+    page_number = _required_int(chunk, "start")
+    heading = _required_str(chunk, "heading")
+    title = _required_str(chunk, "title")
+
+    request_id = str(uuid4())
+    request_payload = {
+        "request_id": request_id,
+        "job_id": job_id,
+        "lesson_name": lesson_name,
+        "chunk_name": chunk_name,
+        "page_number": page_number,
+        "heading": heading,
+        "title": title,
+    }
+
+    page_image_path = get_chunk_cutline_page_image_path(job_id, lesson_name, chunk_name)
+    bbox_image_path = get_chunk_cutline_bbox_image_path(job_id, lesson_name, chunk_name)
+    debug_json_path = get_chunk_cutline_json_path(job_id, lesson_name, chunk_name)
+    request_dir = get_chunk_cutline_request_dir(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        chunk_name=chunk_name,
+        request_id=request_id,
+    )
+
+    _render_pdf_page_to_png(
+        pdf_path=lesson_pdf_path,
+        page_number=page_number,
+        output_png=page_image_path,
+        dpi=DPI,
+    )
+
+    result = run_kaggle_cutline_debug(
+        request_payload=request_payload,
+        page_image_path=page_image_path,
+        request_dir=request_dir,
+    )
+    _copy_kaggle_bbox_image(
+        kaggle_output_dir=_optional_str(result.get("_kaggle_output_dir")),
+        request_id=request_id,
+        target_path=bbox_image_path,
+    )
+
+    artifact = {
+        **request_payload,
+        **{key: value for key, value in result.items() if not key.startswith("_")},
+        "debug_page_path": str(page_image_path),
+        "debug_bbox_path": str(bbox_image_path) if bbox_image_path.exists() else None,
+    }
+    write_json(debug_json_path, artifact)
+
+    matched = bool(result.get("matched", False))
+    bbox = _int_list_or_none(result.get("bbox"))
+    y_cut = _optional_int(result.get("y_cut"))
+
+    return ChunkCutlineDebugResponse(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        chunk_name=chunk_name,
+        matched=matched,
+        page_number=page_number,
+        heading=heading,
+        title=title,
+        matched_text=_optional_str(result.get("matched_text")),
+        bbox=bbox,
+        y_cut=y_cut,
+        reason=_optional_str(result.get("reason")),
+        debug_json_path=str(debug_json_path),
+        debug_page_path=str(page_image_path),
+        debug_bbox_path=str(bbox_image_path) if bbox_image_path.exists() else None,
+    )
+
+
+def _render_pdf_page_to_png(
+    *,
+    pdf_path: Path,
+    page_number: int,
+    output_png: Path,
+    dpi: int,
+) -> Path:
+    import fitz
+
+    if page_number < 1:
+        raise ChunkCutlineInputError("Chunk start page must be a 1-based page number.")
+
+    doc = fitz.open(str(pdf_path))
+    try:
+        if page_number > doc.page_count:
+            raise ChunkCutlineInputError(
+                f"Chunk start page {page_number} is outside lesson PDF page count {doc.page_count}."
+            )
+
+        page = doc.load_page(page_number - 1)
+        zoom = float(dpi) / 72.0
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        output_png.parent.mkdir(parents=True, exist_ok=True)
+        pix.save(str(output_png))
+        return output_png
+    finally:
+        doc.close()
+
+
+def _required_int(payload: dict[str, Any], field: str) -> int:
+    value = payload.get(field)
+    if value is None or isinstance(value, bool):
+        raise ChunkCutlineInputError(f"Chunk JSON must include integer field '{field}'.")
+
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ChunkCutlineInputError(
+            f"Chunk JSON field '{field}' must be an integer."
+        ) from exc
+
+
+def _required_str(payload: dict[str, Any], field: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ChunkCutlineInputError(f"Chunk JSON must include non-empty field '{field}'.")
+    return value.strip()
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_list_or_none(value: Any) -> list[int] | None:
+    if not isinstance(value, list):
+        return None
+
+    try:
+        return [int(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+
+
+def _copy_kaggle_bbox_image(
+    *,
+    kaggle_output_dir: str | None,
+    request_id: str,
+    target_path: Path,
+) -> None:
+    if not kaggle_output_dir:
+        return
+
+    output_dir = Path(kaggle_output_dir)
+    possible_names = [
+        "bbox.png",
+        "cutline_bbox.png",
+        f"{request_id}_bbox.png",
+        f"{request_id}_cutline.png",
+    ]
+
+    for name in possible_names:
+        source_path = output_dir / name
+        if source_path.exists():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, target_path)
+            return
+
+
+__all__ = [
+    "ChunkCutlineInputError",
+    "KaggleCutlineDebugNotConfigured",
+    "detect_debug_cutline_for_chunk",
+]

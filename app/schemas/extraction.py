@@ -108,3 +108,20 @@ class ChunkDebugResponse(BaseModel):
     job_id: str
     lesson_name: str
     chunks: list[ChunkItem]
+
+
+class ChunkCutlineDebugResponse(BaseModel):
+    job_id: str
+    lesson_name: str
+    chunk_name: str
+    matched: bool
+    page_number: int
+    heading: str
+    title: str
+    matched_text: str | None = None
+    bbox: list[int] | None = None
+    y_cut: int | None = None
+    reason: str | None = None
+    debug_json_path: str
+    debug_page_path: str | None = None
+    debug_bbox_path: str | None = None
