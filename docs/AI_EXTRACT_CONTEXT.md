@@ -395,6 +395,14 @@ POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}
 
 Mục tiêu: test chất lượng chunk extraction trên đúng một lesson PDF trước khi triển khai batch extraction.
 
+Prompt chunk debug nằm trực tiếp trong Python builder:
+
+```text
+app/pipeline/gemini_extract/prompts/chunk_prompt.py
+```
+
+`chunk_debug_service.py` gọi `build_chunk_prompt_start_head(...)` từ file này trước khi gọi Gemini. Không dùng `prompts/templates/` cho chunk prompt.
+
 Input:
 
 ```text
@@ -408,18 +416,59 @@ Behavior:
 - Require `lessons_approved.json`.
 - Tìm lesson theo `lesson_name`.
 - Gọi Gemini với đúng một lesson PDF.
+- Gemini chỉ trả `name`, `start`, `first_chunk` hoặc `content_head`, `heading`, `title`.
 - Normalize chunk names cục bộ: `chunk_01`, `chunk_02`, ...
-- Gắn metadata `lesson_name`, `lesson_title`, `topic_name`, `topic_title` vào từng chunk.
+- Tính `end` theo `start` của chunk kế tiếp và `content_head`.
+- Split chunk PDFs từ `lesson/doc/{lesson_name}.pdf`.
 - Không update `job.json` status.
 - Không tạo `chunk/chunks.json`.
 - Không tạo `chunk/chunks_approved.json`.
-- Không split chunk PDFs.
 
-Debug artifact:
+Output debug theo từng lesson:
 
 ```text
-workspace/outputs/{job_id}/chunk/debug/{lesson_name}_chunk_debug.json
+workspace/outputs/{job_id}/chunk/{lesson_name}/
+  chunk_01.json
+  chunk_02.json
+  doc/
+    chunk_01.pdf
+    chunk_02.pdf
 ```
+
+Mỗi chunk JSON là schema tối thiểu, không chứa lesson/topic metadata vì folder path đã xác định lesson:
+
+```json
+{
+  "name": "chunk_01",
+  "start": 1,
+  "end": 3,
+  "first_chunk": true,
+  "heading": "1.",
+  "title": "MỆNH ĐỀ"
+}
+```
+
+```json
+{
+  "name": "chunk_02",
+  "start": 4,
+  "end": 6,
+  "content_head": true,
+  "heading": "2.",
+  "title": "TẬP HỢP"
+}
+```
+
+Quy tắc:
+
+- `chunk_01` có `first_chunk: true`, không có `content_head`.
+- `chunk_02` trở đi có `content_head: true/false`, không có `first_chunk`.
+- `content_head=true`: cùng trang `start` vẫn có nội dung chunk trước nằm phía trên heading này.
+- `content_head=false`: heading bắt đầu sạch ở đầu vùng nội dung.
+- Với chunk hiện tại và chunk kế tiếp:
+  - nếu `next_chunk.content_head=true`, `current.end = next_chunk.start`;
+  - nếu `next_chunk.content_head=false`, `current.end = next_chunk.start - 1`.
+- Chunk cuối có `end = total_pages_of_lesson_pdf`.
 
 Endpoint này chỉ dùng để tune prompt và kiểm tra chất lượng chunk extraction an toàn trước khi có batch flow.
 
@@ -468,7 +517,11 @@ Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuy
 - Giữ `lesson/lesson_raw.json` nguyên trạng, chỉ lọc output reviewable `lesson/lessons.json`.
 - Renumber reviewable lessons tuần tự sau khi lọc; không tạo `lessons_skipped.json`.
 - Thêm debug-only chunk endpoint cho một lesson: `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}`.
-- Debug chunk endpoint ghi `chunk/debug/{lesson_name}_chunk_debug.json`, không update job status, không tạo batch `chunks.json`, không approve chunks và không split chunk PDFs.
+- Debug chunk endpoint hiện ghi minimal JSON theo `chunk/{lesson_name}/chunk_01.json` và split chunk PDF từ `lesson/doc/{lesson_name}.pdf` sang `chunk/{lesson_name}/doc/chunk_01.pdf`.
+- Chunk JSON không chứa lesson/topic metadata; folder path xác định lesson.
+- Thêm rule `first_chunk` cho chunk đầu, `content_head` cho các chunk sau, và end calculation dựa trên start của chunk kế tiếp.
+- Giữ prompt chunk debug trực tiếp trong `app/pipeline/gemini_extract/prompts/chunk_prompt.py`; không dùng template file.
+- Debug chunk endpoint không update job status, không tạo batch `chunks.json`, không approve chunks và không implement batch extraction.
 - Cập nhật tài liệu cho workflow Topic/Lesson extraction hiện tại:
   - `front_matter.pdf` chỉ dùng làm Gemini input để lấy cấu trúc sách.
   - `original.pdf` là nguồn cắt final topic/lesson PDFs.

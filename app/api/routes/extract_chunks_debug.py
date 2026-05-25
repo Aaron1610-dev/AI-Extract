@@ -15,7 +15,11 @@ router = APIRouter(
 )
 
 
-@router.post("/lesson/{lesson_name}", response_model=ChunkDebugResponse)
+@router.post(
+    "/lesson/{lesson_name}",
+    response_model=ChunkDebugResponse,
+    response_model_exclude_none=True,
+)
 def extract_debug_chunks_for_job_lesson(
     job_id: str,
     lesson_name: str,

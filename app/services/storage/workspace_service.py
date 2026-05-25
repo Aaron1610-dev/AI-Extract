@@ -44,8 +44,12 @@ def get_chunk_dir(job_id: str) -> Path:
     return get_job_output_dir(job_id) / "chunk"
 
 
-def get_chunk_debug_dir(job_id: str) -> Path:
-    return get_chunk_dir(job_id) / "debug"
+def get_chunk_lesson_dir(job_id: str, lesson_name: str) -> Path:
+    return get_chunk_dir(job_id) / lesson_name
+
+
+def get_chunk_lesson_doc_dir(job_id: str, lesson_name: str) -> Path:
+    return get_chunk_lesson_dir(job_id, lesson_name) / "doc"
 
 
 def get_topic_raw_json_path(job_id: str) -> Path:
@@ -80,8 +84,12 @@ def get_lesson_doc_path(job_id: str, lesson_name: str) -> Path:
     return get_lesson_dir(job_id) / "doc" / f"{lesson_name}.pdf"
 
 
-def get_chunk_debug_json_path(job_id: str, lesson_name: str) -> Path:
-    return get_chunk_debug_dir(job_id) / f"{lesson_name}_chunk_debug.json"
+def get_chunk_json_path(job_id: str, lesson_name: str, chunk_name: str) -> Path:
+    return get_chunk_lesson_dir(job_id, lesson_name) / f"{chunk_name}.json"
+
+
+def get_chunk_pdf_path(job_id: str, lesson_name: str, chunk_name: str) -> Path:
+    return get_chunk_lesson_doc_dir(job_id, lesson_name) / f"{chunk_name}.pdf"
 
 
 def create_job_dirs(job_id: str) -> tuple[Path, Path]:

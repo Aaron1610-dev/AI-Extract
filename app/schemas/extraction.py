@@ -96,19 +96,15 @@ class LessonApproveResponse(BaseModel):
 
 class ChunkItem(BaseModel):
     name: str
-    lesson_name: str
-    lesson_title: str | None = None
-    topic_name: str | None = None
-    topic_title: str | None = None
+    start: int
+    end: int
+    first_chunk: bool | None = None
+    content_head: bool | None = None
     heading: str | None = None
     title: str
-    start_page_in_lesson: int | None = None
-    end_page_in_lesson: int | None = None
-    summary: str | None = None
 
 
 class ChunkDebugResponse(BaseModel):
     job_id: str
     lesson_name: str
-    lesson_title: str | None = None
     chunks: list[ChunkItem]
