@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+
+.env
+app/core/config.env
+app/core/gemini_rotation_state.json
+
+workspace/uploads/*
+!workspace/uploads/.gitkeep
+
+workspace/outputs/*
+!workspace/outputs/.gitkeep
+
+.DS_Store
+.vscode/
+.idea/
