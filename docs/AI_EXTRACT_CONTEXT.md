@@ -721,39 +721,31 @@ Rule theo old thesis keyword extraction:
 Output folder:
 
 ```text
-workspace/outputs/{job_id}/keyword/{lesson_name}/
+workspace/outputs/{job_id}/chunk/{lesson_name}/keyword/
 ```
 
-One-chunk lesson:
+One-chunk lesson dùng full lesson PDF nhưng vẫn lưu theo chunk đầu tiên:
 
 ```text
-lesson_keywords_raw.json
-lesson_keywords.json
-keywords_summary.json
+keyword_chunk_01.json
 ```
 
 Multi-chunk lesson:
 
 ```text
-chunk_01_keywords_raw.json
-chunk_01_keywords.json
-chunk_02_keywords_raw.json
-chunk_02_keywords.json
-keywords_summary.json
+keyword_chunk_01.json
+keyword_chunk_02.json
 ```
 
-Normalized keyword JSON giữ shape:
+Không tạo `keywords_summary.json` và không ghi raw keyword files. Mỗi file keyword dùng shape tối thiểu:
 
 ```json
 {
-  "source_type": "lesson",
-  "source_name": "lesson_01",
-  "keyword_limit": 10,
+  "chunk_name": "chunk_01",
+  "keyword_count": 10,
   "keywords": [
     {
-      "keyword": "tăng trưởng kinh tế",
-      "reason": "Khái niệm trung tâm của bài học",
-      "confidence": null
+      "keyword_name": "tăng trưởng kinh tế"
     }
   ]
 }
@@ -826,7 +818,7 @@ Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuy
 - Thêm full-lesson cutline endpoint cho một selected lesson: `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/cutline/full`.
 - Full-lesson cutline detect tất cả required boundaries trước, fail thì không rebuild PDFs, success thì rebuild toàn bộ `chunk/{lesson_name}/doc/chunk_*.pdf` trong một pass từ `lesson/doc/{lesson_name}.pdf`; không xử lý all lessons và không batch toàn cục.
 - Thêm keyword extraction debug endpoint cho một selected lesson: `POST /api/extract/jobs/{job_id}/keywords/debug/lesson/{lesson_name}/extract`.
-- Keyword extraction giữ file-based review output trong `keyword/{lesson_name}/`: một chunk dùng lesson PDF và 10 keywords, nhiều chunk dùng từng finalized chunk PDF và 5 keywords/chunk; chưa thêm DB/object-storage/import logic.
+- Keyword extraction giữ file-based review output trong `chunk/{lesson_name}/keyword/keyword_chunk_*.json`: một chunk dùng lesson PDF và 10 keywords, nhiều chunk dùng từng finalized chunk PDF và 5 keywords/chunk; chưa thêm DB/object-storage/import logic.
 - Cập nhật tài liệu cho workflow Topic/Lesson extraction hiện tại:
   - `front_matter.pdf` chỉ dùng làm Gemini input để lấy cấu trúc sách.
   - `original.pdf` là nguồn cắt final topic/lesson PDFs.

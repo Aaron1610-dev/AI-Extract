@@ -28,7 +28,7 @@ NHIỆM VỤ:
 - Mỗi keyword nên ngắn gọn, không phải câu dài.
 - Không lấy các từ chung chung như: bài học, học sinh, hoạt động, câu hỏi, ví dụ, hình, bảng, luyện tập, vận dụng.
 - Không lặp keyword cùng nghĩa chỉ khác viết hoa/viết thường.
-- Mỗi keyword phải có reason ngắn giải thích vì sao quan trọng.
+- Không trả giải thích, reason hoặc confidence.
 
 YÊU CẦU OUTPUT:
 - Chỉ trả JSON thuần, không markdown, không code fence, không giải thích ngoài JSON.
@@ -37,8 +37,7 @@ YÊU CẦU OUTPUT:
 {{
   "keywords": [
     {{
-      "keyword": "...",
-      "reason": "..."
+      "keyword_name": "..."
     }}
   ]
 }}

@@ -154,22 +154,18 @@ class LessonCutlineFullResponse(BaseModel):
 
 
 class KeywordItem(BaseModel):
-    keyword: str
-    reason: str | None = None
-    confidence: float | None = None
+    keyword_name: str
 
 
 class LessonKeywordDebugResult(BaseModel):
-    source_type: str
-    source_name: str
+    chunk_name: str
+    keyword_count: int
     keywords: list[KeywordItem]
+    keyword_path: str
 
 
 class LessonKeywordDebugResponse(BaseModel):
     job_id: str
     lesson_name: str
     chunk_count: int
-    strategy: str
-    keyword_limit: int
     results: list[LessonKeywordDebugResult]
-    summary_path: str
