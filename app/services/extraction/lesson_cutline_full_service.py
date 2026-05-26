@@ -28,6 +28,7 @@ from app.services.storage.workspace_service import (
     get_chunk_lesson_debug_dir,
     get_chunk_lesson_dir,
     get_chunk_pdf_path,
+    get_chunks_approved_json_path,
     get_lesson_cutline_full_json_path,
     get_lesson_doc_path,
     read_json,
@@ -68,6 +69,12 @@ def process_full_lesson_cutlines(
     lesson_pdf_path = get_lesson_doc_path(job_id, lesson_name)
     if not lesson_pdf_path.exists():
         raise FileNotFoundError(f"Lesson PDF was not found: {lesson_pdf_path}")
+
+    approved_path = get_chunks_approved_json_path(job_id, lesson_name)
+    if not approved_path.exists():
+        raise LessonCutlineFullInputError(
+            "Chunks must be approved before finalize. Run /chunks/lesson/{lesson_name}/approve first."
+        )
 
     chunks = _load_lesson_chunks(job_id=job_id, lesson_name=lesson_name)
     if not chunks:

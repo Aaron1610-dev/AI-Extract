@@ -2,13 +2,14 @@
 
 ## 1. Mục tiêu
 
-Tài liệu này mô tả cách kiểm tra readiness cho endpoint debug cutline một chunk:
+Tài liệu này mô tả cách kiểm tra readiness cho Kaggle/PaddleOCR cutline:
 
 ```text
-POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/chunk/{chunk_name}/cutline
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/finalize
 ```
 
-Endpoint này dùng Kaggle để chạy PaddleOCR. Backend AI-Extract không yêu cầu và không chạy `paddleocr`/`paddlepaddle` local.
+Các endpoint này dùng Kaggle để chạy PaddleOCR. Backend AI-Extract không yêu cầu và không chạy `paddleocr`/`paddlepaddle` local.
 
 ## 2. Biến môi trường bắt buộc
 
@@ -76,7 +77,7 @@ Script này không gọi Kaggle, không push dataset, không push kernel và kh�
 
 ## 4. Package gửi lên Kaggle
 
-Mỗi request chỉ upload package tối thiểu cho một chunk:
+One-chunk troubleshooting request chỉ upload package tối thiểu cho một chunk:
 
 ```text
 page.png
@@ -105,6 +106,16 @@ Không upload:
 - toàn bộ `workspace`
 - các chunk/lesson/topic khác
 
+Finalize upload một package batch tối thiểu cho required cutlines của một selected lesson:
+
+```text
+pages/{chunk_name}.png
+run_request.json
+dataset-metadata.json
+```
+
+Batch `run_request.json` có `mode="lesson_cutline_full"` và `items[]`, mỗi item giữ `chunk_name`, `page_number`, `image_file`, `heading`, và `title`.
+
 ## 5. Kernel và output mong đợi
 
 Kernel source tối thiểu nằm tại:
@@ -113,7 +124,7 @@ Kernel source tối thiểu nằm tại:
 app/pipeline/kaggle_kernels/debug-cutline-one-chunk/script.py
 ```
 
-Kernel đọc `run_request.json` và `page.png`, chạy PaddleOCR trong môi trường Kaggle, rồi ghi:
+Kernel đọc `run_request.json`, chạy PaddleOCR trong môi trường Kaggle, rồi ghi one-chunk output:
 
 ```text
 cutline_result.json
@@ -136,6 +147,15 @@ current_run_status_{request_id}.json
 ```
 
 Backend validate `request_id`; nếu output thuộc request cũ/stale, request hiện tại sẽ fail.
+
+Với finalize batch, kernel ghi:
+
+```text
+cutline_results.json
+bbox/{chunk_name}.png
+current_run_status.json
+current_run_status_{request_id}.json
+```
 
 Kernel một-chunk hiện tái dùng logic scoring/matching đã debug từ thesis cũ trong `FastAPI-Khoa-Luan/gemini_pipeline/sgk_extract/chunk_postprocess.py`, gồm:
 
@@ -181,7 +201,7 @@ Thư mục debug ổn định theo từng chunk. Chạy lại cùng chunk sẽ o
 Normal one-call workflow là:
 
 ```text
-POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/chunk/{chunk_name}/cutline
 -> detect y_cut bằng Kaggle/PaddleOCR
 -> nếu matched và applicable thì auto-promote official doc/chunk_*.pdf
 ```
@@ -210,10 +230,10 @@ Không có endpoint promote riêng, không tạo thêm folder PDF output nào, v
 Full lesson workflow cho một selected lesson:
 
 ```text
-POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/cutline/full
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/finalize
 ```
 
-Endpoint này không xử lý tất cả lessons và không phải global batch. Nó detect toàn bộ cutline cần thiết trong một lesson trước, build boundary map, rồi rebuild tất cả official PDFs của lesson trong một pass từ:
+Endpoint này không xử lý tất cả lessons và không phải global batch. Nó detect toàn bộ cutline cần thiết trong một selected lesson bằng một Kaggle batch run, build boundary map, rồi rebuild tất cả official PDFs của lesson trong một pass từ:
 
 ```text
 workspace/outputs/{job_id}/lesson/doc/{lesson_name}.pdf

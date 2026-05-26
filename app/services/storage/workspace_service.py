@@ -104,6 +104,10 @@ def get_chunk_json_path(job_id: str, lesson_name: str, chunk_name: str) -> Path:
     return get_chunk_lesson_dir(job_id, lesson_name) / f"{chunk_name}.json"
 
 
+def get_chunks_approved_json_path(job_id: str, lesson_name: str) -> Path:
+    return get_chunk_lesson_dir(job_id, lesson_name) / "chunks_approved.json"
+
+
 def get_chunk_pdf_path(job_id: str, lesson_name: str, chunk_name: str) -> Path:
     return get_chunk_lesson_doc_dir(job_id, lesson_name) / f"{chunk_name}.pdf"
 

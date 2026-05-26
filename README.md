@@ -43,8 +43,9 @@ Upload PDF
 -> Build lessons
 -> Review/approve lessons
 -> Extract chunks cho một lesson
--> Full lesson cutline cho một lesson
--> Auto keyword extraction sau cutline thành công
+-> Review/edit/approve chunks
+-> Finalize chunks cho một lesson
+-> Auto keyword extraction sau finalize thành công
 ```
 
 Có thể chạy keyword extraction riêng nếu chỉ muốn regenerate file keyword.
@@ -154,9 +155,12 @@ GET  /api/extract/jobs/{job_id}/lessons
 PUT  /api/extract/jobs/{job_id}/lessons
 POST /api/extract/jobs/{job_id}/lessons/approve
 
-POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}
-POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline
-POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/cutline/full
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/extract
+GET  /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}
+PUT  /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/approve
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/finalize
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/chunk/{chunk_name}/cutline
 
 POST /api/extract/jobs/{job_id}/keywords/debug/lesson/{lesson_name}/extract
 
@@ -507,430 +511,73 @@ File được tạo:
 workspace/outputs/{job_id}/lesson/lessons_approved.json
 ```
 
-## 9. Chunk Debug Extraction
+## 9. Chunk Review Workflow
 
-### `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}`
-
-Endpoint này chỉ xử lý một lesson được chọn. Nó dùng Gemini để detect heading cấp cao bên trong lesson PDF, ví dụ `1.`, `2.`, `3.`.
-
-Request:
-
-```bash
-curl -X POST \
-  http://127.0.0.1:8101/api/extract/jobs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunks/debug/lesson/lesson_01
-```
-
-Response:
-
-```json
-{
-  "job_id": "3ce9f3cf-3a3a-4c49-b908-fabb50567db1",
-  "lesson_name": "lesson_01",
-  "chunks": [
-    {
-      "name": "chunk_01",
-      "start": 1,
-      "end": 3,
-      "first_chunk": true,
-      "heading": "1.",
-      "title": "Mệnh đề"
-    },
-    {
-      "name": "chunk_02",
-      "start": 4,
-      "end": 6,
-      "content_head": true,
-      "heading": "2.",
-      "title": "Tập hợp"
-    }
-  ]
-}
-```
-
-Files được tạo:
+Normal chunk flow for one selected lesson:
 
 ```text
-workspace/outputs/{job_id}/chunk/{lesson_name}/chunk_01.json
-workspace/outputs/{job_id}/chunk/{lesson_name}/chunk_02.json
-workspace/outputs/{job_id}/chunk/{lesson_name}/doc/chunk_01.pdf
-workspace/outputs/{job_id}/chunk/{lesson_name}/doc/chunk_02.pdf
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/extract
+GET  /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}
+PUT  /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/approve
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/finalize
 ```
 
-`chunk_01.json`:
+`extract` calls Gemini for one lesson PDF, writes reviewable `chunk_*.json`, and creates initial page-range PDFs in `chunk/{lesson_name}/doc/`. `GET` returns the current review list with `status="reviewing_chunks"`. `PUT` validates edited chunks, rewrites `chunk_*.json`, removes stale chunk JSON/PDF files if the count shrinks, and rebuilds initial page-range PDFs only. `PUT` does not call Kaggle or extract keywords.
 
-```json
-{
-  "name": "chunk_01",
-  "start": 1,
-  "end": 3,
-  "first_chunk": true,
-  "heading": "1.",
-  "title": "Mệnh đề"
-}
-```
+Chunk validation keeps names sequential (`chunk_01`, `chunk_02`, ...), requires `start <= end`, requires `chunk_01.first_chunk=true` with no `content_head`, requires `chunk_02+` to have `content_head=true/false` with no `first_chunk`, and preserves numeric or Roman headings such as `1.`, `2.`, `I.`, `II.`.
 
-`chunk_02.json`:
-
-```json
-{
-  "name": "chunk_02",
-  "start": 4,
-  "end": 6,
-  "content_head": true,
-  "heading": "2.",
-  "title": "Tập hợp"
-}
-```
-
-Chunk PDFs ban đầu được cắt theo page range. Nếu heading chunk bắt đầu giữa trang, cutline stage sẽ sửa lại official PDFs.
-
-## 10. One-Chunk Cutline
-
-### `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline`
-
-Đây là workflow một API call cho một chunk:
-
-1. Validate job, lesson PDF, selected chunk JSON.
-2. Render trang `chunk.start` thành `page.png`.
-3. Upload package tối thiểu lên Kaggle.
-4. Kaggle chạy PaddleOCR.
-5. Kernel dùng logic matching/cutline đã port từ thesis cũ.
-6. Backend ghi debug artifacts.
-7. Nếu matched và applicable, backend tự update official PDFs trong `chunk/{lesson_name}/doc/`.
-
-Request:
-
-```bash
-curl -X POST \
-  http://127.0.0.1:8101/api/extract/jobs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunks/debug/lesson/lesson_01/chunk/chunk_03/cutline
-```
-
-Response khi matched và promoted:
-
-```json
-{
-  "job_id": "3ce9f3cf-3a3a-4c49-b908-fabb50567db1",
-  "lesson_name": "lesson_01",
-  "chunk_name": "chunk_03",
-  "matched": true,
-  "page_number": 10,
-  "heading": "3.",
-  "title": "Các phép toán trên tập hợp",
-  "matched_text": "3. Các phép toán trên tập hợp",
-  "bbox": [120, 345, 980, 390],
-  "y_cut": 345,
-  "match_score": 83,
-  "matched_prefix": 8,
-  "expected_len": 10,
-  "match_ratio": 0.8,
-  "best_mode": "prefix_line",
-  "weak_cut": false,
-  "force_cut": true,
-  "early_stop": true,
-  "debug_json_path": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/debug/chunk_03/cutline.json",
-  "debug_page_path": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/debug/chunk_03/page.png",
-  "debug_bbox_path": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/debug/chunk_03/bbox.png",
-  "promoted": true,
-  "promote_status": "promoted",
-  "previous_chunk": "chunk_02",
-  "selected_chunk_pdf": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/doc/chunk_03.pdf",
-  "previous_chunk_pdf": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/doc/chunk_02.pdf",
-  "debug_promote_json_path": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/debug/chunk_03/cutline_promote.json"
-}
-```
-
-Response khi matched nhưng không cần promote vì `content_head=false`:
-
-```json
-{
-  "job_id": "3ce9f3cf-3a3a-4c49-b908-fabb50567db1",
-  "lesson_name": "lesson_01",
-  "chunk_name": "chunk_04",
-  "matched": true,
-  "page_number": 11,
-  "heading": "4.",
-  "title": "Luyện tập",
-  "y_cut": 240,
-  "debug_json_path": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/debug/chunk_04/cutline.json",
-  "promoted": false,
-  "promote_status": "skipped",
-  "promote_reason": "Selected chunk does not have content_head=true; page-range doc is already sufficient."
-}
-```
-
-Response khi detection fail:
-
-```json
-{
-  "job_id": "3ce9f3cf-3a3a-4c49-b908-fabb50567db1",
-  "lesson_name": "lesson_01",
-  "chunk_name": "chunk_03",
-  "matched": false,
-  "page_number": 10,
-  "heading": "3.",
-  "title": "Các phép toán trên tập hợp",
-  "reason": "No OCR candidate reached minimum threshold",
-  "debug_json_path": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/debug/chunk_03/cutline.json",
-  "promoted": false,
-  "promote_status": "not_run"
-}
-```
-
-Files debug:
+`approve` writes:
 
 ```text
-workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/page.png
-workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/bbox.png
-workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/cutline.json
-workspace/outputs/{job_id}/chunk/{lesson_name}/debug/{chunk_name}/cutline_promote.json
+workspace/outputs/{job_id}/chunk/{lesson_name}/chunks_approved.json
 ```
 
-`cutline.json` thường chứa:
+with:
 
 ```json
 {
-  "request_id": "0b945df4-1f4d-4b7a-8ed3-4c5b0b1b0ef6",
-  "matched": true,
-  "matched_text": "3. Các phép toán trên tập hợp",
-  "bbox": [120, 345, 980, 390],
-  "y_cut": 345,
-  "image_height": 1754,
-  "match_score": 83,
-  "matched_prefix": 8,
-  "expected_len": 10,
-  "match_ratio": 0.8,
-  "prefix_hits": 8,
-  "lcs": 8,
-  "cov_obs": 0.8,
-  "cov_exp": 0.8,
-  "best_mode": "prefix_line",
-  "weak_cut": false,
-  "force_cut": true,
-  "early_stop": true,
-  "ocr_candidates": []
-}
-```
-
-`cutline_promote.json` thường chứa:
-
-```json
-{
-  "job_id": "3ce9f3cf-3a3a-4c49-b908-fabb50567db1",
+  "job_id": "...",
   "lesson_name": "lesson_01",
-  "selected_chunk": "chunk_03",
-  "previous_chunk": "chunk_02",
-  "source_lesson_pdf": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/lesson/doc/lesson_01.pdf",
-  "page_number": 10,
-  "y_cut_image": 345,
-  "image_height": 1754,
-  "pdf_page_height": 842.0,
-  "y_cut_pdf": 165.6,
-  "official_outputs": {
-    "previous_chunk_pdf": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/doc/chunk_02.pdf",
-    "selected_chunk_pdf": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/doc/chunk_03.pdf"
-  },
-  "promoted": true,
-  "backup_created": false
+  "status": "approved_chunks",
+  "chunks": []
 }
 ```
 
-Official PDFs được update trực tiếp:
+`finalize` requires approved chunks. It sends all required cutline pages for the selected lesson to Kaggle in one batch run, rebuilds all official chunk PDFs in one pass from `lesson/doc/{lesson_name}.pdf`, then extracts keywords into `chunk/{lesson_name}/keyword/keyword_chunk_*.json`.
 
-```text
-workspace/outputs/{job_id}/chunk/{lesson_name}/doc/chunk_*.pdf
-```
-
-Không tạo:
-
-```text
-doc_cutline/
-doc_backup_before_cutline/
-```
-
-Logic matching tái dùng từ thesis cũ gồm `_score`, `prefix_match_count`, `robust_match_count`, `try_merge_title_from_next_lines`, `weak_cut`, `force_cut`, `early_stop`, `matched_prefix`, `match_score`, `lcs`, `cov_obs`, `cov_exp`, `best_mode`.
-
-## 11. Full-Lesson Cutline
-
-### `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/cutline/full`
-
-Endpoint này xử lý cutline cho **một selected lesson**, không xử lý tất cả lessons và không phải global batch. Trong một lesson, endpoint gửi tất cả required cutline pages lên Kaggle bằng **một batch run** thay vì gọi Kaggle một lần cho từng chunk.
-
-Workflow:
-
-1. Load `chunk/{lesson_name}/chunk_*.json`.
-2. Sort chunks theo thứ tự số.
-3. Xác định toàn bộ required cutlines:
-   - `chunk_01` nếu `first_chunk=true`.
-   - `chunk_02+` nếu `content_head=true`.
-4. Skip chunk có `content_head=false`.
-5. Render tất cả required start pages vào `debug/{chunk_name}/page.png`.
-6. Tạo một Kaggle package với `pages/{chunk_name}.png` và `run_request.json` có `mode="lesson_cutline_full"` + `items[]`.
-7. Kaggle trả `cutline_results.json` và `bbox/{chunk_name}.png`.
-8. Backend lưu từng kết quả vào `debug/{chunk_name}/cutline.json` và `debug/{chunk_name}/bbox.png`.
-9. Nếu có required cutline fail, không rebuild official PDFs.
-10. Nếu tất cả required cutlines pass, build boundary map.
-11. Rebuild toàn bộ official `chunk_*.pdf` của lesson trong một pass từ `lesson/doc/{lesson_name}.pdf`.
-12. Sau khi PDF rebuild thành công, tự chạy keyword extraction cho cùng lesson.
-
-One-chunk endpoint `/chunk/{chunk_name}/cutline` vẫn xử lý đúng một selected chunk trong một Kaggle run riêng.
-
-Request:
-
-```bash
-curl -X POST \
-  http://127.0.0.1:8101/api/extract/jobs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunks/debug/lesson/lesson_01/cutline/full
-```
-
-Response khi completed:
+Finalize response includes:
 
 ```json
 {
-  "job_id": "3ce9f3cf-3a3a-4c49-b908-fabb50567db1",
+  "job_id": "...",
   "lesson_name": "lesson_01",
   "status": "completed",
   "kaggle_mode": "batch",
   "kaggle_runs": 1,
   "processed_chunks": ["chunk_01", "chunk_03"],
-  "skipped_chunks": [
-    {
-      "chunk_name": "chunk_02",
-      "reason": "content_head=false"
-    }
-  ],
+  "skipped_chunks": [{"chunk_name": "chunk_02", "reason": "content_head=false"}],
   "failed_chunks": [],
   "updated_pdfs": ["chunk_01.pdf", "chunk_02.pdf", "chunk_03.pdf"],
-  "debug_summary_path": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/debug/lesson_cutline_full.json",
+  "debug_summary_path": ".../debug/lesson_cutline_full.json",
   "keyword_extracted": true,
-  "keyword_paths": [
-    "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/keyword/keyword_chunk_01.json"
-  ],
-  "keyword_results": [
-    {
-      "chunk_name": "chunk_01",
-      "keyword_count": 5,
-      "keywords": [
-        {
-          "keyword_name": "Mệnh đề"
-        },
-        {
-          "keyword_name": "Mệnh đề toán học"
-        },
-        {
-          "keyword_name": "Mệnh đề phủ định"
-        },
-        {
-          "keyword_name": "Kí hiệu ∀"
-        },
-        {
-          "keyword_name": "Tính đúng sai"
-        }
-      ],
-      "keyword_path": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/keyword/keyword_chunk_01.json"
-    }
-  ],
-  "keyword_error": null
+  "keyword_paths": [".../keyword/keyword_chunk_01.json"]
 }
 ```
 
-Response khi cutline fail:
-
-```json
-{
-  "job_id": "3ce9f3cf-3a3a-4c49-b908-fabb50567db1",
-  "lesson_name": "lesson_01",
-  "status": "failed",
-  "processed_chunks": ["chunk_01"],
-  "skipped_chunks": [],
-  "failed_chunks": [
-    {
-      "chunk_name": "chunk_03",
-      "reason": "No OCR candidate reached minimum threshold"
-    }
-  ],
-  "updated_pdfs": [],
-  "debug_summary_path": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/debug/lesson_cutline_full.json",
-  "keyword_extracted": false,
-  "keyword_results": [],
-  "keyword_error": null
-}
-```
-
-Response khi PDF rebuild xong nhưng keyword fail:
-
-```json
-{
-  "job_id": "3ce9f3cf-3a3a-4c49-b908-fabb50567db1",
-  "lesson_name": "lesson_01",
-  "status": "completed_with_keyword_error",
-  "processed_chunks": ["chunk_01", "chunk_03"],
-  "skipped_chunks": [],
-  "failed_chunks": [],
-  "updated_pdfs": ["chunk_01.pdf", "chunk_02.pdf", "chunk_03.pdf"],
-  "debug_summary_path": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/debug/lesson_cutline_full.json",
-  "keyword_extracted": false,
-  "keyword_results": [],
-  "keyword_error": "Gemini keyword extraction failed: quota exceeded"
-}
-```
-
-Summary file:
+Optional troubleshooting route:
 
 ```text
-workspace/outputs/{job_id}/chunk/{lesson_name}/debug/lesson_cutline_full.json
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/chunk/{chunk_name}/cutline
 ```
 
-`lesson_cutline_full.json` khi thành công:
-
-```json
-{
-  "job_id": "3ce9f3cf-3a3a-4c49-b908-fabb50567db1",
-  "lesson_name": "lesson_01",
-  "source_lesson_pdf": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/lesson/doc/lesson_01.pdf",
-  "processed_chunks": ["chunk_01", "chunk_03"],
-  "skipped_chunks": [
-    {
-      "chunk_name": "chunk_02",
-      "reason": "content_head=false"
-    }
-  ],
-  "failed_chunks": [],
-  "updated_pdfs": ["chunk_01.pdf", "chunk_02.pdf", "chunk_03.pdf"],
-  "cutline_boundaries": {
-    "chunk_01": {
-      "page_number": 2,
-      "y_cut_image": 329,
-      "y_cut_pdf": 158.2,
-      "match_score": 83,
-      "best_mode": "prefix_line"
-    }
-  },
-  "status": "completed",
-  "keyword_extracted": true,
-  "keyword_paths": [
-    "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/keyword/keyword_chunk_01.json"
-  ]
-}
-```
-
-Full lesson cutline luôn rebuild từ:
-
-```text
-workspace/outputs/{job_id}/lesson/doc/{lesson_name}.pdf
-```
-
-và ghi đè official PDFs:
-
-```text
-workspace/outputs/{job_id}/chunk/{lesson_name}/doc/chunk_*.pdf
-```
-
-Endpoint không update job status, không đổi chunk JSON schema và không tạo backup folder.
+This route runs one selected chunk through Kaggle/PaddleOCR and can auto-promote affected official PDFs. It is not part of the normal review/finalize flow.
 
 ## 12. Keyword Extraction Theo Lesson
 
 ### `POST /api/extract/jobs/{job_id}/keywords/debug/lesson/{lesson_name}/extract`
 
-Endpoint này chạy keyword extraction cho một lesson. Nó cũng được gọi tự động sau khi `/cutline/full` rebuild PDFs thành công.
+Endpoint này chạy keyword extraction cho một lesson. Nó cũng được gọi tự động sau khi `/chunks/lesson/{lesson_name}/finalize` rebuild PDFs thành công.
 
 Rules:
 
@@ -1197,16 +844,24 @@ POST /api/extract/jobs/{job_id}/lessons/approve
 8. Extract chunks cho một lesson:
 
 ```text
-POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/extract
 ```
 
-9. Rebuild cutline cho cả selected lesson và auto extract keywords:
+9. Review/edit/approve chunks:
 
 ```text
-POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/cutline/full
+GET  /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}
+PUT  /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/approve
 ```
 
-10. Nếu cần chạy lại keyword extraction:
+10. Finalize chunks, rebuild cutlines và auto extract keywords:
+
+```text
+POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/finalize
+```
+
+11. Nếu cần chạy lại keyword extraction:
 
 ```text
 POST /api/extract/jobs/{job_id}/keywords/debug/lesson/{lesson_name}/extract
@@ -1271,7 +926,7 @@ lesson khác
 ## 19. Giới Hạn Hiện Tại
 
 - Workflow hiện tại là debug/review-first, chưa phải production import pipeline.
-- `/cutline/full` chỉ xử lý một selected lesson, không xử lý toàn bộ lessons.
+- `/chunks/lesson/{lesson_name}/finalize` chỉ xử lý một selected lesson, không xử lý toàn bộ lessons.
 - Không có global batch all-jobs workflow.
 - Không có MongoDB/MinIO/PostgreSQL/Neo4j import.
 - Không có database sync.

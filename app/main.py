@@ -4,18 +4,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.debug import router as debug_router
-from app.api.routes.extract_chunks_cutline_debug import (
-    router as extract_chunks_cutline_debug_router,
-)
-from app.api.routes.extract_chunks_debug import router as extract_chunks_debug_router
+from app.api.routes.extract_chunks import router as extract_chunks_router
 from app.api.routes.extract_jobs import router as extract_jobs_router
 from app.api.routes.extract_keywords_debug import (
     router as extract_keywords_debug_router,
 )
 from app.api.routes.extract_lessons import router as extract_lessons_router
-from app.api.routes.extract_lesson_cutline_full import (
-    router as extract_lesson_cutline_full_router,
-)
 from app.api.routes.extract_topics import router as extract_topics_router
 from app.api.routes.health import router as health_router
 from app.api.routes.keywords import router as keywords_router
@@ -44,8 +38,6 @@ app.include_router(keywords_router)
 app.include_router(extract_jobs_router)
 app.include_router(extract_topics_router)
 app.include_router(extract_lessons_router)
-app.include_router(extract_chunks_debug_router)
-app.include_router(extract_chunks_cutline_debug_router)
-app.include_router(extract_lesson_cutline_full_router)
+app.include_router(extract_chunks_router)
 app.include_router(extract_keywords_debug_router)
 app.include_router(debug_router)

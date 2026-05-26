@@ -8,12 +8,21 @@ from app.pipeline.gemini_extract.prompts.chunk_prompt import (
     build_chunk_prompt_start_head,
 )
 from app.pipeline.gemini_extract.topic_parser import parse_json_loose
-from app.schemas.extraction import ChunkDebugResponse, ChunkItem, LessonItem
+from app.schemas.extraction import (
+    ChunkApproveResponse,
+    ChunkDebugResponse,
+    ChunkItem,
+    ChunkReviewResponse,
+    LessonItem,
+)
 from app.services.extraction.job_service import get_job
 from app.services.gemini.client import generate_with_pdf
 from app.services.storage.workspace_service import (
+    get_chunk_lesson_doc_dir,
+    get_chunk_lesson_dir,
     get_chunk_json_path,
     get_chunk_pdf_path,
+    get_chunks_approved_json_path,
     get_lesson_doc_path,
     get_lessons_approved_path,
     read_json,
@@ -28,10 +37,26 @@ class ChunkDebugPrerequisiteError(RuntimeError):
     pass
 
 
+class ChunkReviewInputError(ValueError):
+    pass
+
+
 def extract_debug_chunks_for_lesson(
     job_id: str,
     lesson_name: str,
 ) -> ChunkDebugResponse:
+    response = extract_chunks_for_lesson(job_id=job_id, lesson_name=lesson_name)
+    return ChunkDebugResponse(
+        job_id=response.job_id,
+        lesson_name=response.lesson_name,
+        chunks=response.chunks,
+    )
+
+
+def extract_chunks_for_lesson(
+    job_id: str,
+    lesson_name: str,
+) -> ChunkReviewResponse:
     get_job(job_id)
 
     lesson = _read_approved_lesson(job_id, lesson_name)
@@ -51,23 +76,81 @@ def extract_debug_chunks_for_lesson(
     raw_payload = parse_json_loose(raw_response_text)
     chunks = _normalize_chunks(raw_payload, total_pages=total_pages)
 
-    for chunk in chunks:
-        chunk_payload = chunk.model_dump(mode="json", exclude_none=True)
-        write_json(
-            get_chunk_json_path(job_id, lesson.name, chunk.name),
-            chunk_payload,
-        )
-        split_pdf_range(
-            source_pdf=lesson_pdf_path,
-            output_pdf=get_chunk_pdf_path(job_id, lesson.name, chunk.name),
-            start_page=chunk.start,
-            end_page=chunk.end,
+    if chunks:
+        _write_review_chunks(
+            job_id=job_id,
+            lesson_name=lesson.name,
+            chunks=chunks,
+            lesson_pdf_path=lesson_pdf_path,
         )
 
-    return ChunkDebugResponse(
+    return ChunkReviewResponse(
         job_id=job_id,
         lesson_name=lesson.name,
+        status="reviewing_chunks",
         chunks=chunks,
+    )
+
+
+def get_chunks_for_lesson(job_id: str, lesson_name: str) -> ChunkReviewResponse:
+    get_job(job_id)
+    chunks = _read_chunk_items(job_id=job_id, lesson_name=lesson_name)
+    return ChunkReviewResponse(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        status="reviewing_chunks",
+        chunks=chunks,
+    )
+
+
+def update_chunks_for_lesson(
+    job_id: str,
+    lesson_name: str,
+    chunks: list[ChunkItem],
+) -> ChunkReviewResponse:
+    get_job(job_id)
+    lesson_pdf_path = get_lesson_doc_path(job_id, lesson_name)
+    if not lesson_pdf_path.exists():
+        raise FileNotFoundError(f"Lesson PDF was not found: {lesson_pdf_path}")
+
+    validated = _validate_review_chunks(chunks)
+    _write_review_chunks(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        chunks=validated,
+        lesson_pdf_path=lesson_pdf_path,
+    )
+    approved_path = get_chunks_approved_json_path(job_id, lesson_name)
+    if approved_path.exists():
+        approved_path.unlink()
+
+    return ChunkReviewResponse(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        status="reviewing_chunks",
+        chunks=validated,
+    )
+
+
+def approve_chunks_for_lesson(job_id: str, lesson_name: str) -> ChunkApproveResponse:
+    get_job(job_id)
+    chunks = _validate_review_chunks(
+        _read_chunk_items(job_id=job_id, lesson_name=lesson_name)
+    )
+    approved_path = get_chunks_approved_json_path(job_id, lesson_name)
+    payload = {
+        "job_id": job_id,
+        "lesson_name": lesson_name,
+        "status": "approved_chunks",
+        "chunks": [chunk.model_dump(mode="json", exclude_none=True) for chunk in chunks],
+    }
+    write_json(approved_path, payload)
+    return ChunkApproveResponse(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        status="approved_chunks",
+        chunks=chunks,
+        chunks_approved_path=str(approved_path),
     )
 
 
@@ -75,7 +158,7 @@ def _read_approved_lesson(job_id: str, lesson_name: str) -> LessonItem:
     lessons_approved_path = get_lessons_approved_path(job_id)
     if not lessons_approved_path.exists():
         raise ChunkDebugPrerequisiteError(
-            "Lessons must be approved before debug chunk extraction."
+            "Lessons must be approved before chunk extraction."
         )
 
     payload = read_json(lessons_approved_path)
@@ -90,6 +173,116 @@ def _read_approved_lesson(job_id: str, lesson_name: str) -> LessonItem:
             return LessonItem.model_validate(item)
 
     raise FileNotFoundError(f"Lesson '{lesson_name}' was not found in approved lessons.")
+
+
+def _read_chunk_items(*, job_id: str, lesson_name: str) -> list[ChunkItem]:
+    lesson_chunk_dir = get_chunk_lesson_dir(job_id, lesson_name)
+    if not lesson_chunk_dir.exists():
+        raise FileNotFoundError(f"Chunk lesson directory was not found: {lesson_chunk_dir}")
+
+    chunks: list[ChunkItem] = []
+    for path in sorted(
+        lesson_chunk_dir.glob("chunk_*.json"),
+        key=lambda item: _chunk_sort_key(item.stem),
+    ):
+        payload = read_json(path)
+        if not isinstance(payload, dict):
+            raise ChunkReviewInputError(f"Chunk JSON must contain an object: {path}")
+        chunks.append(ChunkItem.model_validate(payload))
+
+    if not chunks:
+        raise FileNotFoundError(f"No chunk JSON files were found for lesson: {lesson_name}")
+
+    return chunks
+
+
+def _validate_review_chunks(chunks: list[ChunkItem]) -> list[ChunkItem]:
+    if not chunks:
+        raise ChunkReviewInputError("chunks must be non-empty.")
+
+    validated: list[ChunkItem] = []
+    for index, chunk in enumerate(chunks, start=1):
+        expected_name = f"chunk_{index:02d}"
+        if chunk.name != expected_name:
+            raise ChunkReviewInputError(
+                f"Chunk names must be sequential; expected {expected_name}."
+            )
+        if chunk.start > chunk.end:
+            raise ChunkReviewInputError(f"{chunk.name} start must be <= end.")
+        if not chunk.heading or not _is_valid_chunk_heading(chunk.heading.strip()):
+            raise ChunkReviewInputError(
+                f"{chunk.name} heading must be numeric or Roman heading like '1.' or 'I.'."
+            )
+        if not chunk.title.strip():
+            raise ChunkReviewInputError(f"{chunk.name} title must not be empty.")
+
+        if index == 1:
+            if chunk.first_chunk is not True:
+                raise ChunkReviewInputError("chunk_01 must have first_chunk=true.")
+            if chunk.content_head is not None:
+                raise ChunkReviewInputError("chunk_01 must not have content_head.")
+            validated.append(
+                ChunkItem(
+                    name=chunk.name,
+                    start=int(chunk.start),
+                    end=int(chunk.end),
+                    first_chunk=True,
+                    heading=chunk.heading.strip(),
+                    title=chunk.title.strip(),
+                )
+            )
+            continue
+
+        if chunk.first_chunk is not None:
+            raise ChunkReviewInputError(f"{chunk.name} must not have first_chunk.")
+        if not isinstance(chunk.content_head, bool):
+            raise ChunkReviewInputError(f"{chunk.name} must have content_head true/false.")
+        validated.append(
+            ChunkItem(
+                name=chunk.name,
+                start=int(chunk.start),
+                end=int(chunk.end),
+                content_head=chunk.content_head,
+                heading=chunk.heading.strip(),
+                title=chunk.title.strip(),
+            )
+        )
+
+    return validated
+
+
+def _write_review_chunks(
+    *,
+    job_id: str,
+    lesson_name: str,
+    chunks: list[ChunkItem],
+    lesson_pdf_path: Any,
+) -> None:
+    validated = _validate_review_chunks(chunks)
+    lesson_chunk_dir = get_chunk_lesson_dir(job_id, lesson_name)
+    doc_dir = get_chunk_lesson_doc_dir(job_id, lesson_name)
+    valid_names = {chunk.name for chunk in validated}
+
+    for stale_path in lesson_chunk_dir.glob("chunk_*.json"):
+        if stale_path.stem not in valid_names:
+            stale_path.unlink()
+    if doc_dir.exists():
+        for stale_pdf in doc_dir.glob("chunk_*.pdf"):
+            if stale_pdf.stem not in valid_names:
+                stale_pdf.unlink()
+
+    for chunk in validated:
+        chunk_payload = chunk.model_dump(mode="json", exclude_none=True)
+        write_json(
+            get_chunk_json_path(job_id, lesson_name, chunk.name),
+            chunk_payload,
+        )
+        split_pdf_range(
+            source_pdf=lesson_pdf_path,
+            output_pdf=get_chunk_pdf_path(job_id, lesson_name, chunk.name),
+            start_page=chunk.start,
+            end_page=chunk.end,
+        )
 
 
 def _normalize_chunks(payload: dict[str, Any], total_pages: int) -> list[ChunkItem]:
@@ -192,6 +385,13 @@ def _clean_string(value: Any) -> str | None:
 
 def _is_valid_chunk_heading(value: str) -> bool:
     return _CHUNK_HEADING_RE.match(value) is not None
+
+
+def _chunk_sort_key(chunk_name: str) -> tuple[int, str]:
+    match = re.match(r"^chunk_(\d+)$", chunk_name)
+    if not match:
+        return (10**9, chunk_name)
+    return (int(match.group(1)), chunk_name)
 
 
 def _to_int(value: Any) -> int | None:

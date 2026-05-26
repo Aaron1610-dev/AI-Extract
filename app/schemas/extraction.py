@@ -104,10 +104,29 @@ class ChunkItem(BaseModel):
     title: str
 
 
+class ChunkListRequest(BaseModel):
+    chunks: list[ChunkItem]
+
+
 class ChunkDebugResponse(BaseModel):
     job_id: str
     lesson_name: str
     chunks: list[ChunkItem]
+
+
+class ChunkReviewResponse(BaseModel):
+    job_id: str
+    lesson_name: str
+    status: str
+    chunks: list[ChunkItem]
+
+
+class ChunkApproveResponse(BaseModel):
+    job_id: str
+    lesson_name: str
+    status: str
+    chunks: list[ChunkItem]
+    chunks_approved_path: str
 
 
 class ChunkCutlineDebugResponse(BaseModel):
