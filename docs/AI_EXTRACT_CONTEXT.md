@@ -418,6 +418,8 @@ Behavior:
 - Gọi Gemini với đúng một lesson PDF.
 - Gemini chỉ trả `name`, `start`, `first_chunk` hoặc `content_head`, `heading`, `title`.
 - Normalize chunk names cục bộ: `chunk_01`, `chunk_02`, ...
+- Chunk `heading` là heading cấp cao in trong PDF, có thể là số Ả Rập (`"1."`, `"2."`) hoặc số La Mã (`"I."`, `"II."`).
+- Preserve `heading` đúng kiểu in trên PDF; không đổi `"I."` thành `"1."` và không đổi `"1."` thành `"I."`.
 - Tính `end` theo `start` của chunk kế tiếp và `content_head`.
 - Split chunk PDFs từ `lesson/doc/{lesson_name}.pdf`.
 - Không update `job.json` status.
@@ -441,10 +443,10 @@ Mỗi chunk JSON là schema tối thiểu, không chứa lesson/topic metadata v
 {
   "name": "chunk_01",
   "start": 1,
-  "end": 3,
+  "end": 1,
   "first_chunk": true,
-  "heading": "1.",
-  "title": "MỆNH ĐỀ"
+  "heading": "I.",
+  "title": "ĐỐI TƯỢNG NGHIÊN CỨU CỦA VẬT LÍ VÀ MỤC TIÊU CỦA MÔN VẬT LÍ"
 }
 ```
 
@@ -454,7 +456,7 @@ Mỗi chunk JSON là schema tối thiểu, không chứa lesson/topic metadata v
   "start": 4,
   "end": 6,
   "content_head": true,
-  "heading": "2.",
+  "heading": "II.",
   "title": "TẬP HỢP"
 }
 ```
@@ -463,6 +465,8 @@ Quy tắc:
 
 - `chunk_01` có `first_chunk: true`, không có `content_head`.
 - `chunk_02` trở đi có `content_head: true/false`, không có `first_chunk`.
+- `name` được normalize thành `chunk_01`, `chunk_02`, ...; `heading` không bị convert theo index.
+- Heading hợp lệ cho chunk cấp cao gồm numeric dạng `1.`, `2.`, `10.` hoặc Roman dạng `I.`, `II.`, `III.`, `IV.`.
 - `content_head=true`: cùng trang `start` vẫn có nội dung chunk trước nằm phía trên heading này.
 - `content_head=false`: heading bắt đầu sạch ở đầu vùng nội dung.
 - Với chunk hiện tại và chunk kế tiếp:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.pipeline.gemini_extract.pdf_utils import count_pdf_pages, split_pdf_range
@@ -18,6 +19,9 @@ from app.services.storage.workspace_service import (
     read_json,
     write_json,
 )
+
+
+_CHUNK_HEADING_RE = re.compile(r"^(?:\d+|[IVXLCDM]+)\.$")
 
 
 class ChunkDebugPrerequisiteError(RuntimeError):
@@ -102,7 +106,12 @@ def _normalize_chunks(payload: dict[str, Any], total_pages: int) -> list[ChunkIt
         title = _clean_string(raw_chunk.get("title"))
         start = _to_int(raw_chunk.get("start"))
 
-        if not heading or not title or start is None:
+        if (
+            not heading
+            or not _is_valid_chunk_heading(heading)
+            or not title
+            or start is None
+        ):
             continue
 
         start = max(1, min(start, total_pages))
@@ -179,6 +188,10 @@ def _clean_string(value: Any) -> str | None:
 
     cleaned = str(value).strip()
     return cleaned or None
+
+
+def _is_valid_chunk_heading(value: str) -> bool:
+    return _CHUNK_HEADING_RE.match(value) is not None
 
 
 def _to_int(value: Any) -> int | None:

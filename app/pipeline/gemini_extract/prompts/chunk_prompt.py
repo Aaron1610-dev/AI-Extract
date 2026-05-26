@@ -17,10 +17,23 @@ PDF bài học này có {total_pages} trang.
 
 Nhiệm vụ: trích xuất các chunk theo heading cấp cao nhất trong bài học.
 
-Chỉ lấy các heading cấp cao đánh số như:
+Chỉ lấy các heading cấp cao. Heading cấp cao có thể là số Ả Rập hoặc số La Mã như:
 - "1."
 - "2."
 - "3."
+- "I."
+- "II."
+- "III."
+- "IV."
+- "V."
+
+Phải giữ nguyên kiểu heading đúng như in trên PDF:
+- Nếu PDF dùng "I." thì heading phải là "I.", không đổi thành "1.".
+- Nếu PDF dùng "II." thì heading phải là "II.", không đổi thành "2.".
+- Nếu PDF dùng "1." thì heading phải là "1.", không đổi thành "I.".
+- Nếu bài này dùng heading La Mã, dùng La Mã nhất quán.
+- Nếu bài này dùng heading số Ả Rập, dùng số Ả Rập nhất quán.
+- Không trộn hai kiểu trừ khi PDF nhìn thấy rõ là có trộn.
 
 Không lấy:
 - a), b), c)
@@ -56,9 +69,13 @@ Quy tắc chunk:
 - chunk_01 không được có content_head.
 - chunk_02 trở đi phải có content_head: true hoặc false.
 - chunk_02 trở đi không được có first_chunk.
-- heading phải là số mục cấp cao dạng "1.", "2.", "3.".
-- title là phần chữ sau heading, giữ nguyên cách viết trên PDF.
+- heading chỉ chứa nhãn heading cấp cao, ví dụ "1." hoặc "I.", không chứa title.
+- title chỉ chứa phần chữ sau heading, giữ nguyên cách viết trên PDF.
 - Không tự tạo heading hoặc title nếu không thấy rõ trên trang.
+- Chuỗi heading phải nhất quán với kiểu in trên PDF:
+  - nếu là số Ả Rập thì theo thứ tự "1.", "2.", "3.";
+  - nếu là số La Mã thì theo thứ tự "I.", "II.", "III.";
+  - không đổi số La Mã sang số Ả Rập hoặc ngược lại.
 
 Quy tắc xác định content_head:
 - content_head=true nghĩa là trên cùng trang start, phía TRÊN heading vẫn còn nội dung thật của chunk trước.
@@ -96,14 +113,14 @@ JSON cần đúng shape sau:
       "name": "chunk_01",
       "start": 1,
       "first_chunk": true,
-      "heading": "1.",
-      "title": "MỆNH ĐỀ"
+      "heading": "I.",
+      "title": "ĐỐI TƯỢNG NGHIÊN CỨU CỦA VẬT LÍ VÀ MỤC TIÊU CỦA MÔN VẬT LÍ"
     }},
     {{
       "name": "chunk_02",
       "start": 4,
       "content_head": true,
-      "heading": "2.",
+      "heading": "II.",
       "title": "TẬP HỢP"
     }}
   ]

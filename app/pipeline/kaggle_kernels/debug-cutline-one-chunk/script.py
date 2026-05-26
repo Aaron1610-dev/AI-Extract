@@ -148,18 +148,24 @@ def _score(m: int, has_heading: bool, has_dot: bool) -> int:
     return m * 10 + (2 if has_heading else 0) + (1 if has_dot else 0)
 
 
-def _is_pure_heading_token(text: str, heading_num: int) -> tuple[bool, bool]:
+def _heading_label_pattern(heading_label: str) -> str:
+    return re.escape(heading_label)
+
+
+def _is_pure_heading_token(text: str, heading_label: str) -> tuple[bool, bool]:
     raw = (text or "").strip()
-    if re.match(rf"^\s*{heading_num}\s*\)\s*$", raw):
+    label = _heading_label_pattern(heading_label)
+    if re.match(rf"^\s*{label}\s*\)\s*$", raw):
         return False, False
-    match = re.match(rf"^\s*{heading_num}\s*(\.)?\s*$", raw)
+    match = re.match(rf"^\s*{label}\s*(\.)?\s*$", raw)
     if not match:
         return False, False
     return True, bool(match.group(1))
 
 
-def _has_dot_heading(text: str, heading_num: int) -> bool:
-    return bool(re.search(rf"^\s*{heading_num}\s*\.", text or ""))
+def _has_dot_heading(text: str, heading_label: str) -> bool:
+    label = _heading_label_pattern(heading_label)
+    return bool(re.search(rf"^\s*{label}\s*\.", text or ""))
 
 
 def _v_overlap_ratio(a_y0: float, a_y1: float, b_y0: float, b_y1: float) -> float:
@@ -168,10 +174,10 @@ def _v_overlap_ratio(a_y0: float, a_y1: float, b_y0: float, b_y1: float) -> floa
     return inter / denom
 
 
-def collect_heading_candidates(dets: list[dict], heading_num: int) -> list[dict]:
+def collect_heading_candidates(dets: list[dict], heading_label: str) -> list[dict]:
     out = []
     for det in dets:
-        ok, has_dot = _is_pure_heading_token(det.get("text", ""), heading_num)
+        ok, has_dot = _is_pure_heading_token(det.get("text", ""), heading_label)
         if ok:
             item = dict(det)
             item["has_dot"] = has_dot
@@ -302,14 +308,15 @@ def lcs_len(a: list[str], b: list[str]) -> int:
     return dp[len(b)]
 
 
-def split_heading_prefix(raw_text: str, heading_num: int, require_dot: bool = False) -> tuple[bool, str]:
+def split_heading_prefix(raw_text: str, heading_label: str, require_dot: bool = False) -> tuple[bool, str]:
     text = (raw_text or "").strip()
-    if re.match(rf"^\s*{heading_num}\s*\)", text):
+    label = _heading_label_pattern(heading_label)
+    if re.match(rf"^\s*{label}\s*\)", text):
         return False, ""
     if require_dot:
-        match = re.match(rf"^\s*{heading_num}\s*\.\s*(\S.+)$", text)
+        match = re.match(rf"^\s*{label}\s*\.\s*(\S.+)$", text)
     else:
-        match = re.match(rf"^\s*{heading_num}\s*\.?\s*(\S.+)$", text)
+        match = re.match(rf"^\s*{label}\s*\.?\s*(\S.+)$", text)
     if not match:
         return False, ""
     remaining = match.group(1).strip()
@@ -318,8 +325,11 @@ def split_heading_prefix(raw_text: str, heading_num: int, require_dot: bool = Fa
     return False, ""
 
 
-def build_seq_from_line_items(items: list[dict], heading_num: int) -> tuple[list[str] | None, dict | None, bool]:
-    hn = str(heading_num)
+def build_seq_from_line_items(items: list[dict], heading_label: str) -> tuple[list[str] | None, dict | None, bool]:
+    heading_tokens = tokenize_words(heading_label)
+    if len(heading_tokens) != 1:
+        return None, None, False
+    expected_heading_token = heading_tokens[0]
     started = False
     seq = []
     hbbox = None
@@ -330,12 +340,12 @@ def build_seq_from_line_items(items: list[dict], heading_num: int) -> tuple[list
             continue
         if not started:
             for index, token in enumerate(tokens):
-                if token.isdigit() and token == hn:
+                if token == expected_heading_token:
                     started = True
-                    seq.append(hn)
+                    seq.append(expected_heading_token)
                     x0, y0, x1, y1 = item["bbox"]
                     hbbox = {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
-                    has_dot = _has_dot_heading(item.get("text", ""), heading_num)
+                    has_dot = _has_dot_heading(item.get("text", ""), heading_label)
                     for token2 in tokens[index + 1:]:
                         if token2.isdigit():
                             continue
@@ -386,9 +396,9 @@ def try_merge_title_from_next_lines(
     return best_m, best_obs
 
 
-def extract_heading_num(heading: str) -> int | None:
-    match = re.search(r"(\d+)", heading or "")
-    return int(match.group(1)) if match else None
+def extract_heading_label(heading: str) -> str | None:
+    match = re.match(r"^\s*(\d+|[IVXLCDM]+)\s*\.\s*$", heading or "")
+    return match.group(1) if match else None
 
 
 def bbox_ints(item: dict) -> list[int]:
@@ -406,11 +416,11 @@ def merge_line_records(lines: list[dict], first: dict, extra_obs: list[str]) -> 
 
 
 def match_heading_title(lines: list[dict], dets: list[dict], heading: str, title: str) -> dict:
-    heading_num = extract_heading_num(heading)
+    heading_label = extract_heading_label(heading)
     expected_letters = build_expected_letters_from_title(title)
-    if heading_num is None:
+    if heading_label is None:
         return build_no_match_payload(
-            reason="missing_heading_number",
+            reason="missing_heading_label",
             lines=lines,
             expected_letters=expected_letters,
             best=None,
@@ -425,7 +435,7 @@ def match_heading_title(lines: list[dict], dets: list[dict], heading: str, title
             early_stop=False,
         )
 
-    heading_cands = collect_heading_candidates(dets, heading_num)
+    heading_cands = collect_heading_candidates(dets, heading_label)
     best = None
     early_stop = False
 
@@ -435,11 +445,11 @@ def match_heading_title(lines: list[dict], dets: list[dict], heading: str, title
         matched_title = robust_match_count(obs_title, expected_letters)
         cand_list = []
 
-        has_pref, remaining = split_heading_prefix(line["text"], heading_num, require_dot=False)
+        has_pref, remaining = split_heading_prefix(line["text"], heading_label, require_dot=False)
         if has_pref:
             obs_pref = extract_initials_no_case_change(remaining)
             matched_pref = robust_match_count(obs_pref, expected_letters)
-            has_dot_pref = _has_dot_heading(line["text"], heading_num)
+            has_dot_pref = _has_dot_heading(line["text"], heading_label)
             cand_list.append(
                 make_candidate(
                     line=line,
@@ -464,7 +474,7 @@ def match_heading_title(lines: list[dict], dets: list[dict], heading: str, title
                 )
             )
 
-        seq, hbbox, has_dot = build_seq_from_line_items(items, heading_num)
+        seq, hbbox, has_dot = build_seq_from_line_items(items, heading_label)
         if seq is not None and hbbox is not None:
             obs_same = seq[1:]
             matched_same = robust_match_count(obs_same, expected_letters)
