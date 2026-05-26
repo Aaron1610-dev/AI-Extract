@@ -31,6 +31,7 @@ from app.services.storage.workspace_service import (
 
 
 _CHUNK_HEADING_RE = re.compile(r"^(?:\d+|[IVXLCDM]+)\.$")
+NO_MAIN_CHUNK_TITLE = "KHÔNG CÓ MỤC CHÍNH"
 
 
 class ChunkDebugPrerequisiteError(RuntimeError):
@@ -76,13 +77,12 @@ def extract_chunks_for_lesson(
     raw_payload = parse_json_loose(raw_response_text)
     chunks = _normalize_chunks(raw_payload, total_pages=total_pages)
 
-    if chunks:
-        _write_review_chunks(
-            job_id=job_id,
-            lesson_name=lesson.name,
-            chunks=chunks,
-            lesson_pdf_path=lesson_pdf_path,
-        )
+    _write_review_chunks(
+        job_id=job_id,
+        lesson_name=lesson.name,
+        chunks=chunks,
+        lesson_pdf_path=lesson_pdf_path,
+    )
 
     return ChunkReviewResponse(
         job_id=job_id,
@@ -142,7 +142,7 @@ def approve_chunks_for_lesson(job_id: str, lesson_name: str) -> ChunkApproveResp
         "job_id": job_id,
         "lesson_name": lesson_name,
         "status": "approved_chunks",
-        "chunks": [chunk.model_dump(mode="json", exclude_none=True) for chunk in chunks],
+        "chunks": [_chunk_file_payload(chunk) for chunk in chunks],
     }
     write_json(approved_path, payload)
     return ChunkApproveResponse(
@@ -200,6 +200,26 @@ def _validate_review_chunks(chunks: list[ChunkItem]) -> list[ChunkItem]:
     if not chunks:
         raise ChunkReviewInputError("chunks must be non-empty.")
 
+    if _is_no_heading_chunk_list(chunks):
+        chunk = chunks[0]
+        if chunk.start != 1:
+            raise ChunkReviewInputError("No-heading chunk must start at page 1.")
+        if chunk.end < 1:
+            raise ChunkReviewInputError("No-heading chunk end must be >= 1.")
+        if chunk.first_chunk is not None:
+            raise ChunkReviewInputError("No-heading chunk must not have first_chunk.")
+        if chunk.content_head is not None:
+            raise ChunkReviewInputError("No-heading chunk must not have content_head.")
+        return [
+            ChunkItem(
+                name="chunk_01",
+                start=1,
+                end=int(chunk.end),
+                heading=None,
+                title=NO_MAIN_CHUNK_TITLE,
+            )
+        ]
+
     validated: list[ChunkItem] = []
     for index, chunk in enumerate(chunks, start=1):
         expected_name = f"chunk_{index:02d}"
@@ -251,6 +271,17 @@ def _validate_review_chunks(chunks: list[ChunkItem]) -> list[ChunkItem]:
     return validated
 
 
+def _is_no_heading_chunk_list(chunks: list[ChunkItem]) -> bool:
+    if len(chunks) != 1:
+        return False
+    chunk = chunks[0]
+    return (
+        chunk.name == "chunk_01"
+        and chunk.heading is None
+        and chunk.title == NO_MAIN_CHUNK_TITLE
+    )
+
+
 def _write_review_chunks(
     *,
     job_id: str,
@@ -272,10 +303,9 @@ def _write_review_chunks(
                 stale_pdf.unlink()
 
     for chunk in validated:
-        chunk_payload = chunk.model_dump(mode="json", exclude_none=True)
         write_json(
             get_chunk_json_path(job_id, lesson_name, chunk.name),
-            chunk_payload,
+            _chunk_file_payload(chunk),
         )
         split_pdf_range(
             source_pdf=lesson_pdf_path,
@@ -283,6 +313,15 @@ def _write_review_chunks(
             start_page=chunk.start,
             end_page=chunk.end,
         )
+
+
+def _chunk_file_payload(chunk: ChunkItem) -> dict[str, Any]:
+    payload = chunk.model_dump(mode="json", exclude_none=False)
+    return {
+        key: value
+        for key, value in payload.items()
+        if value is not None or key == "heading"
+    }
 
 
 def _normalize_chunks(payload: dict[str, Any], total_pages: int) -> list[ChunkItem]:
@@ -318,6 +357,17 @@ def _normalize_chunks(payload: dict[str, Any], total_pages: int) -> list[ChunkIt
         )
 
     candidates.sort(key=lambda item: item["start"])
+    if not candidates:
+        return [
+            ChunkItem(
+                name="chunk_01",
+                start=1,
+                end=max(1, total_pages),
+                heading=None,
+                title=NO_MAIN_CHUNK_TITLE,
+            )
+        ]
+
     chunks: list[ChunkItem] = []
 
     for index, candidate in enumerate(candidates):

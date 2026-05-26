@@ -11,6 +11,7 @@ from app.services.extraction.chunk_cutline_debug_service import (
     ChunkCutlineInputError,
     DPI,
 )
+from app.services.extraction.chunk_debug_service import NO_MAIN_CHUNK_TITLE
 from app.services.extraction.chunk_cutline_promote_service import (
     InternalPromoteInputError,
     convert_y_cut_image_to_pdf,
@@ -298,15 +299,29 @@ def _load_lesson_chunks(*, job_id: str, lesson_name: str) -> list[ChunkRecord]:
 
 
 def _needs_cutline_detection(chunk: ChunkRecord) -> bool:
+    if _is_no_heading_chunk(chunk):
+        return False
+    if not _optional_str(chunk.payload.get("heading")):
+        return False
     if chunk.name == "chunk_01":
         return bool(chunk.payload.get("first_chunk"))
     return bool(chunk.payload.get("content_head"))
 
 
 def _skip_reason(chunk: ChunkRecord) -> str:
+    if _is_no_heading_chunk(chunk) or not _optional_str(chunk.payload.get("heading")):
+        return "heading=null; no cutline needed"
     if chunk.name == "chunk_01":
         return "first_chunk=false"
     return "content_head=false"
+
+
+def _is_no_heading_chunk(chunk: ChunkRecord) -> bool:
+    return (
+        chunk.name == "chunk_01"
+        and chunk.payload.get("heading") is None
+        and chunk.payload.get("title") == NO_MAIN_CHUNK_TITLE
+    )
 
 
 def _index_batch_results(batch_result: dict[str, Any]) -> dict[str, dict[str, Any]]:

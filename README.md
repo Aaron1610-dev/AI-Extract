@@ -523,6 +523,20 @@ POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/finalize
 
 Chunk validation keeps names sequential (`chunk_01`, `chunk_02`, ...), requires `start <= end`, requires `chunk_01.first_chunk=true` with no `content_head`, requires `chunk_02+` to have `content_head=true/false` with no `first_chunk`, and preserves numeric or Roman headings such as `1.`, `2.`, `I.`, `II.`.
 
+If Gemini finds no valid top-level heading, extraction creates exactly one no-heading chunk for the whole lesson:
+
+```json
+{
+  "name": "chunk_01",
+  "start": 1,
+  "end": 5,
+  "heading": null,
+  "title": "KHÔNG CÓ MỤC CHÍNH"
+}
+```
+
+This no-heading chunk must not contain `first_chunk`, `content_head`, or `fallback_chunk`. Its initial `doc/chunk_01.pdf` is the full lesson PDF.
+
 `approve` writes:
 
 ```text
@@ -540,7 +554,7 @@ with:
 }
 ```
 
-`finalize` requires approved chunks. It sends all required cutline pages for the selected lesson to Kaggle in one batch run, rebuilds all official chunk PDFs in one pass from `lesson/doc/{lesson_name}.pdf`, then extracts keywords into `chunk/{lesson_name}/keyword/keyword_chunk_*.json`.
+`finalize` requires approved chunks. It sends all required real-heading cutline pages for the selected lesson to Kaggle in one batch run, rebuilds all official chunk PDFs in one pass from `lesson/doc/{lesson_name}.pdf`, then extracts keywords into `chunk/{lesson_name}/keyword/keyword_chunk_*.json`. If the only chunk has `heading=null`, finalize skips Kaggle/cutline, rebuilds `doc/chunk_01.pdf` as the full lesson PDF, and still extracts keywords.
 
 Finalize response includes:
 
@@ -560,6 +574,8 @@ Finalize response includes:
   "keyword_paths": [".../keyword/keyword_chunk_01.json"]
 }
 ```
+
+For a no-heading lesson, finalize summary has `processed_chunks: []`, `skipped_chunks: [{"chunk_name": "chunk_01", "reason": "heading=null; no cutline needed"}]`, `updated_pdfs: ["chunk_01.pdf"]`, and `keyword_extracted: true` when keyword extraction succeeds.
 
 ## 12. Keyword Review Theo Lesson
 
@@ -583,7 +599,7 @@ workspace/outputs/{job_id}/chunk/{lesson_name}/keyword/keywords_approved.json
 
 Rules:
 
-- Nếu lesson có đúng một chunk:
+- Nếu lesson có đúng một chunk, bao gồm no-heading chunk:
   - Source PDF: `workspace/outputs/{job_id}/lesson/doc/{lesson_name}.pdf`
   - Bắt buộc đúng 10 keywords.
   - Output: `workspace/outputs/{job_id}/chunk/{lesson_name}/keyword/keyword_chunk_01.json`
@@ -857,15 +873,7 @@ Readiness script chỉ kiểm tra env, requirements và kernel source. Nó khôn
 - Không hard-code Gemini API key hoặc Kaggle API key trong source code.
 - Không log secret value.
 - Chỉ log tên biến môi trường bị thiếu.
-- One-chunk cutline chỉ upload package tối thiểu cho chunk được chọn:
-
-```text
-page.png
-run_request.json
-dataset-metadata.json
-```
-
-Full-lesson cutline chỉ upload package tối thiểu cho required cutlines của selected lesson:
+Finalize cutline chỉ upload package tối thiểu cho required real-heading cutlines của selected lesson:
 
 ```text
 pages/{chunk_name}.png

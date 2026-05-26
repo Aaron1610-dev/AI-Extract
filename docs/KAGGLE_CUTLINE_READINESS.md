@@ -76,7 +76,7 @@ Script này không gọi Kaggle, không push dataset, không push kernel và kh�
 
 ## 4. Package gửi lên Kaggle
 
-Finalize uploads one minimal batch package for required cutlines of a selected lesson:
+Finalize uploads one minimal batch package for required real-heading cutlines of a selected lesson. Chunks with `heading=null` are skipped and do not create a Kaggle package item.
 
 ```text
 pages/{chunk_name}.png

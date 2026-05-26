@@ -424,6 +424,7 @@ Behavior:
 - Normalize chunk names cục bộ: `chunk_01`, `chunk_02`, ...
 - Chunk `heading` là heading cấp cao in trong PDF, có thể là số Ả Rập (`"1."`, `"2."`) hoặc số La Mã (`"I."`, `"II."`).
 - Preserve `heading` đúng kiểu in trên PDF; không đổi `"I."` thành `"1."` và không đổi `"1."` thành `"I."`.
+- Nếu Gemini không tìm thấy heading cấp cao hợp lệ, tạo đúng một chunk đại diện toàn lesson với `heading=null`.
 - Tính `end` theo `start` của chunk kế tiếp và `content_head`.
 - Split initial chunk PDFs từ `lesson/doc/{lesson_name}.pdf`.
 - `GET` trả review list với `status="reviewing_chunks"`.
@@ -474,6 +475,19 @@ Quy tắc:
 - `chunk_02` trở đi có `content_head: true/false`, không có `first_chunk`.
 - `name` được normalize thành `chunk_01`, `chunk_02`, ...; `heading` không bị convert theo index.
 - Heading hợp lệ cho chunk cấp cao gồm numeric dạng `1.`, `2.`, `10.` hoặc Roman dạng `I.`, `II.`, `III.`, `IV.`.
+- Nếu lesson không có heading cấp cao hợp lệ, chunk JSON phải là shape tối thiểu sau và không được có `first_chunk`, `content_head`, hoặc `fallback_chunk`:
+
+```json
+{
+  "name": "chunk_01",
+  "start": 1,
+  "end": 5,
+  "heading": null,
+  "title": "KHÔNG CÓ MỤC CHÍNH"
+}
+```
+
+- Với no-heading chunk, `end = total_pages_of_lesson_pdf` và `doc/chunk_01.pdf` là toàn bộ lesson PDF.
 - `content_head=true`: cùng trang `start` vẫn có nội dung chunk trước nằm phía trên heading này.
 - `content_head=false`: heading bắt đầu sạch ở đầu vùng nội dung.
 - Với chunk hiện tại và chunk kế tiếp:
@@ -494,13 +508,15 @@ POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/finalize
 Finalize chỉ xử lý một selected lesson, không xử lý toàn bộ lessons. Workflow dùng một Kaggle batch run cho tất cả required cutlines của lesson:
 
 - Load `chunk/{lesson_name}/chunk_*.json` và sort theo số chunk.
-- Detect các chunk cần boundary: `chunk_01` khi `first_chunk=true`, và `chunk_02+` khi `content_head=true`.
+- Detect các chunk cần boundary: chỉ chunk có `heading != null`; trong đó `chunk_01` cần cutline khi `first_chunk=true`, và `chunk_02+` cần cutline khi `content_head=true`.
+- Skip các chunk `heading=null` với reason `heading=null; no cutline needed`.
 - Skip các chunk `content_head=false`.
 - Render toàn bộ required start pages vào `debug/{chunk_name}/page.png`.
 - Gửi một package Kaggle duy nhất gồm `pages/{chunk_name}.png` và `run_request.json` có `mode="lesson_cutline_full"` + `items[]`.
 - Kaggle trả `cutline_results.json` và `bbox/{chunk_name}.png` cho nhiều chunk trong cùng một run.
 - Backend lưu lại từng kết quả vào `debug/{chunk_name}/cutline.json` và copy `debug/{chunk_name}/bbox.png` nếu có.
 - Nếu bất kỳ required cutline nào fail hoặc confidence không đủ, ghi summary `status=failed` và không rebuild official PDFs.
+- Nếu không có required cutline vì lesson chỉ có no-heading chunk, không gọi Kaggle, không build Kaggle package, rebuild `doc/chunk_01.pdf` là toàn bộ lesson PDF, rồi vẫn chạy keyword extraction.
 - Nếu tất cả required cutlines hợp lệ, build boundary map rồi rebuild toàn bộ `chunk/{lesson_name}/doc/chunk_*.pdf` trong một pass từ `lesson/doc/{lesson_name}.pdf`.
 - Sau khi official chunk PDFs rebuild thành công, endpoint tự gọi keyword extraction cho cùng lesson.
 - Nếu cutline fail thì không chạy keyword extraction.
@@ -512,13 +528,13 @@ Output summary:
 workspace/outputs/{job_id}/chunk/{lesson_name}/debug/lesson_cutline_full.json
 ```
 
-Summary có `kaggle_mode="batch"`, `kaggle_request_id`, `kaggle_runs=1` khi có required cutlines, `processed_chunks`, `failed_chunks`, `cutline_boundaries`, `updated_pdfs`, `keyword_extracted`, và `keyword_paths`.
+Summary có `kaggle_mode="batch"`, `kaggle_request_id`, `kaggle_runs=1` khi có required cutlines, `processed_chunks`, `failed_chunks`, `cutline_boundaries`, `updated_pdfs`, `keyword_extracted`, và `keyword_paths`. Với no-heading lesson, summary có `kaggle_runs=0`, `processed_chunks=[]`, `skipped_chunks=[{"chunk_name": "chunk_01", "reason": "heading=null; no cutline needed"}]`, `updated_pdfs=["chunk_01.pdf"]`, và `keyword_extracted=true` nếu keyword extraction thành công.
 
 Full lesson rebuild không tạo thêm PDF folder, không tạo preview/backup folder, không sửa chunk JSON và không update job status. Với mỗi chunk, start boundary lấy từ cutline của chính chunk nếu có; end boundary lấy từ cutline của next chunk nếu next chunk start page nằm trong range hiện tại. PDF được ghi trực tiếp vào `chunk/{lesson_name}/doc/`.
 
 Keyword post-processing của `/chunks/lesson/{lesson_name}/finalize` dùng internal keyword extraction service:
 
-- One-chunk lesson: dùng `lesson/doc/{lesson_name}.pdf`, bắt buộc đúng 10 keywords, ghi `chunk/{lesson_name}/keyword/keyword_chunk_01.json`.
+- One-chunk lesson, bao gồm no-heading chunk: dùng `lesson/doc/{lesson_name}.pdf`, bắt buộc đúng 10 keywords, ghi `chunk/{lesson_name}/keyword/keyword_chunk_01.json`.
 - Multi-chunk lesson: dùng các finalized `chunk/{lesson_name}/doc/chunk_*.pdf`, bắt buộc đúng 5 keywords/chunk, ghi `chunk/{lesson_name}/keyword/keyword_chunk_*.json`.
 - Summary `lesson_cutline_full.json` có `keyword_extracted`, `keyword_paths`, và nếu lỗi thì có `keyword_error`.
 

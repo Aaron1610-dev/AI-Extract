@@ -95,6 +95,8 @@ class LessonApproveResponse(BaseModel):
 
 
 class ChunkItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     start: int
     end: int
