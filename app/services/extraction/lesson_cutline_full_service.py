@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 from typing import Any
+from uuid import uuid4
 
 from app.schemas.extraction import LessonCutlineFullResponse
 from app.services.extraction.chunk_cutline_debug_service import (
     ChunkCutlineInputError,
-    detect_cutline_artifacts_for_chunk,
+    DPI,
 )
 from app.services.extraction.chunk_cutline_promote_service import (
     InternalPromoteInputError,
@@ -17,9 +19,13 @@ from app.services.extraction.chunk_cutline_promote_service import (
 )
 from app.services.extraction.job_service import get_job
 from app.services.extraction.keyword_debug_service import extract_keywords_for_lesson_debug
+from app.services.kaggle_cutline_debug_service import run_kaggle_cutline_batch
 from app.services.storage.workspace_service import (
+    get_chunk_cutline_bbox_image_path,
+    get_chunk_cutline_json_path,
     get_chunk_cutline_page_image_path,
     get_chunk_doc_dir,
+    get_chunk_lesson_debug_dir,
     get_chunk_lesson_dir,
     get_chunk_pdf_path,
     get_lesson_cutline_full_json_path,
@@ -71,6 +77,7 @@ def process_full_lesson_cutlines(
     skipped_chunks: list[dict[str, str]] = []
     failed_chunks: list[dict[str, str]] = []
     boundaries: dict[str, CutlineBoundary] = {}
+    required_chunks: list[ChunkRecord] = []
 
     for chunk in chunks:
         if not _needs_cutline_detection(chunk):
@@ -81,51 +88,123 @@ def process_full_lesson_cutlines(
                 }
             )
             continue
+        required_chunks.append(chunk)
 
-        try:
-            detection = detect_cutline_artifacts_for_chunk(
-                job_id=job_id,
-                lesson_name=lesson_name,
-                chunk_name=chunk.name,
+    request_id: str | None = None
+    if required_chunks:
+        request_id = str(uuid4())
+        page_image_paths: dict[str, Path] = {}
+        request_items: list[dict[str, Any]] = []
+        for chunk in required_chunks:
+            page_image_path = get_chunk_cutline_page_image_path(
+                job_id,
+                lesson_name,
+                chunk.name,
             )
-            cutline = detection.artifact
-            if not detection.matched:
+            _render_pdf_page_to_png(
+                pdf_path=lesson_pdf_path,
+                page_number=chunk.start,
+                output_png=page_image_path,
+                dpi=DPI,
+            )
+            page_image_paths[chunk.name] = page_image_path
+            request_items.append(
+                {
+                    "chunk_name": chunk.name,
+                    "page_number": chunk.start,
+                    "image_file": f"pages/{chunk.name}.png",
+                    "heading": _required_str(chunk.payload, "heading"),
+                    "title": _required_str(chunk.payload, "title"),
+                }
+            )
+
+        request_payload = {
+            "request_id": request_id,
+            "job_id": job_id,
+            "lesson_name": lesson_name,
+            "mode": "lesson_cutline_full",
+            "items": request_items,
+        }
+        batch_result = run_kaggle_cutline_batch(
+            request_payload=request_payload,
+            page_image_paths=page_image_paths,
+            request_dir=get_chunk_lesson_debug_dir(job_id, lesson_name) / "kaggle_batch",
+        )
+        result_by_chunk = _index_batch_results(batch_result)
+        kaggle_output_dir = _optional_str(batch_result.get("_kaggle_output_dir"))
+
+        for chunk in required_chunks:
+            request_item = next(
+                item for item in request_items if item["chunk_name"] == chunk.name
+            )
+            cutline = result_by_chunk.get(chunk.name)
+            if cutline is None:
                 failed_chunks.append(
                     {
                         "chunk_name": chunk.name,
-                        "reason": detection.reason or "Cutline detection did not match.",
+                        "reason": "Kaggle batch output did not include this chunk.",
                     }
                 )
                 continue
 
-            validate_cutline_confidence(cutline)
-            y_cut_image = _required_int(cutline, "y_cut")
-            image_height = get_cutline_image_height(
+            artifact = _save_batch_cutline_artifacts(
+                job_id=job_id,
+                lesson_name=lesson_name,
+                request_id=request_id,
+                request_item=request_item,
                 cutline=cutline,
-                page_image_path=get_chunk_cutline_page_image_path(job_id, lesson_name, chunk.name),
+                kaggle_output_dir=kaggle_output_dir,
             )
-            pdf_page_height = _get_pdf_page_height(
-                source_pdf=lesson_pdf_path,
-                page_number=chunk.start,
-            )
-            y_cut_pdf = convert_y_cut_image_to_pdf(
-                y_cut_image=float(y_cut_image),
-                image_height=float(image_height),
-                pdf_page_height=pdf_page_height,
-            )
-            boundaries[chunk.name] = CutlineBoundary(
-                chunk_name=chunk.name,
-                page_number=chunk.start,
-                y_cut_image=y_cut_image,
-                image_height=image_height,
-                y_cut_pdf=y_cut_pdf,
-                match_score=_optional_int(cutline.get("match_score") or cutline.get("best_match_score")),
-                best_mode=_optional_str(cutline.get("best_mode")),
-            )
-            processed_chunks.append(chunk.name)
+            if not bool(artifact.get("matched")):
+                failed_chunks.append(
+                    {
+                        "chunk_name": chunk.name,
+                        "reason": _optional_str(artifact.get("reason"))
+                        or "Cutline detection did not match.",
+                    }
+                )
+                continue
 
-        except (ChunkCutlineInputError, InternalPromoteInputError, FileNotFoundError) as exc:
-            failed_chunks.append({"chunk_name": chunk.name, "reason": str(exc)})
+            try:
+                validate_cutline_confidence(artifact)
+                y_cut_image = _required_int(artifact, "y_cut")
+                image_height = get_cutline_image_height(
+                    cutline=artifact,
+                    page_image_path=get_chunk_cutline_page_image_path(
+                        job_id,
+                        lesson_name,
+                        chunk.name,
+                    ),
+                )
+                pdf_page_height = _get_pdf_page_height(
+                    source_pdf=lesson_pdf_path,
+                    page_number=chunk.start,
+                )
+                y_cut_pdf = convert_y_cut_image_to_pdf(
+                    y_cut_image=float(y_cut_image),
+                    image_height=float(image_height),
+                    pdf_page_height=pdf_page_height,
+                )
+                boundaries[chunk.name] = CutlineBoundary(
+                    chunk_name=chunk.name,
+                    page_number=chunk.start,
+                    y_cut_image=y_cut_image,
+                    image_height=image_height,
+                    y_cut_pdf=y_cut_pdf,
+                    match_score=_optional_int(
+                        artifact.get("match_score") or artifact.get("best_match_score")
+                    ),
+                    best_mode=_optional_str(artifact.get("best_mode")),
+                )
+                processed_chunks.append(chunk.name)
+
+            except (
+                ChunkCutlineInputError,
+                InternalPromoteInputError,
+                LessonCutlineFullInputError,
+                FileNotFoundError,
+            ) as exc:
+                failed_chunks.append({"chunk_name": chunk.name, "reason": str(exc)})
 
     summary_path = get_lesson_cutline_full_json_path(job_id, lesson_name)
     if failed_chunks:
@@ -139,6 +218,8 @@ def process_full_lesson_cutlines(
             updated_pdfs=[],
             boundaries=boundaries,
             status="failed",
+            kaggle_request_id=request_id,
+            kaggle_runs=1 if required_chunks else 0,
         )
         write_json(summary_path, summary_payload)
         return _response_from_summary(summary_payload, summary_path)
@@ -161,6 +242,8 @@ def process_full_lesson_cutlines(
         updated_pdfs=updated_pdfs,
         boundaries=boundaries,
         status="completed",
+        kaggle_request_id=request_id,
+        kaggle_runs=1 if required_chunks else 0,
     )
     try:
         keyword_response = extract_keywords_for_lesson_debug(
@@ -217,6 +300,99 @@ def _skip_reason(chunk: ChunkRecord) -> str:
     if chunk.name == "chunk_01":
         return "first_chunk=false"
     return "content_head=false"
+
+
+def _index_batch_results(batch_result: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    results = batch_result.get("results")
+    if not isinstance(results, list):
+        raise LessonCutlineFullInputError("Kaggle batch output must include results list.")
+
+    indexed: dict[str, dict[str, Any]] = {}
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        chunk_name = _optional_str(item.get("chunk_name"))
+        if chunk_name:
+            indexed[chunk_name] = item
+    return indexed
+
+
+def _save_batch_cutline_artifacts(
+    *,
+    job_id: str,
+    lesson_name: str,
+    request_id: str,
+    request_item: dict[str, Any],
+    cutline: dict[str, Any],
+    kaggle_output_dir: str | None,
+) -> dict[str, Any]:
+    chunk_name = str(request_item["chunk_name"])
+    page_image_path = get_chunk_cutline_page_image_path(job_id, lesson_name, chunk_name)
+    bbox_image_path = get_chunk_cutline_bbox_image_path(job_id, lesson_name, chunk_name)
+    debug_json_path = get_chunk_cutline_json_path(job_id, lesson_name, chunk_name)
+    _copy_batch_bbox_image(
+        kaggle_output_dir=kaggle_output_dir,
+        chunk_name=chunk_name,
+        target_path=bbox_image_path,
+    )
+
+    artifact = {
+        "request_id": request_id,
+        "job_id": job_id,
+        "lesson_name": lesson_name,
+        **request_item,
+        **{key: value for key, value in cutline.items() if not key.startswith("_")},
+        "debug_page_path": str(page_image_path),
+        "debug_bbox_path": str(bbox_image_path) if bbox_image_path.exists() else None,
+    }
+    write_json(debug_json_path, artifact)
+    return artifact
+
+
+def _copy_batch_bbox_image(
+    *,
+    kaggle_output_dir: str | None,
+    chunk_name: str,
+    target_path: Path,
+) -> None:
+    if not kaggle_output_dir:
+        return
+
+    source_path = Path(kaggle_output_dir) / "bbox" / f"{chunk_name}.png"
+    if not source_path.exists():
+        return
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source_path, target_path)
+
+
+def _render_pdf_page_to_png(
+    *,
+    pdf_path: Path,
+    page_number: int,
+    output_png: Path,
+    dpi: int,
+) -> Path:
+    import fitz
+
+    if page_number < 1:
+        raise ChunkCutlineInputError("Chunk start page must be a 1-based page number.")
+
+    doc = fitz.open(str(pdf_path))
+    try:
+        if page_number > doc.page_count:
+            raise ChunkCutlineInputError(
+                f"Chunk start page {page_number} is outside lesson PDF page count {doc.page_count}."
+            )
+
+        page = doc.load_page(page_number - 1)
+        zoom = float(dpi) / 72.0
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        output_png.parent.mkdir(parents=True, exist_ok=True)
+        pix.save(str(output_png))
+        return output_png
+    finally:
+        doc.close()
 
 
 def _rebuild_lesson_chunk_pdfs(
@@ -392,11 +568,16 @@ def _build_summary_payload(
     updated_pdfs: list[str],
     boundaries: dict[str, CutlineBoundary],
     status: str,
+    kaggle_request_id: str | None,
+    kaggle_runs: int,
 ) -> dict[str, Any]:
     return {
         "job_id": job_id,
         "lesson_name": lesson_name,
         "source_lesson_pdf": str(lesson_pdf_path),
+        "kaggle_mode": "batch",
+        "kaggle_request_id": kaggle_request_id,
+        "kaggle_runs": kaggle_runs,
         "processed_chunks": processed_chunks,
         "skipped_chunks": skipped_chunks,
         "failed_chunks": failed_chunks,
@@ -426,12 +607,15 @@ def _response_from_summary(
         job_id=str(summary_payload["job_id"]),
         lesson_name=str(summary_payload["lesson_name"]),
         status=str(summary_payload["status"]),
+        kaggle_mode=_optional_str(summary_payload.get("kaggle_mode")),
+        kaggle_runs=_optional_int(summary_payload.get("kaggle_runs")),
         processed_chunks=list(summary_payload["processed_chunks"]),
         skipped_chunks=list(summary_payload["skipped_chunks"]),
         failed_chunks=list(summary_payload["failed_chunks"]),
         updated_pdfs=list(summary_payload["updated_pdfs"]),
         debug_summary_path=str(summary_path),
         keyword_extracted=bool(summary_payload.get("keyword_extracted")),
+        keyword_paths=list(summary_payload.get("keyword_paths") or []),
         keyword_results=list(summary_payload.get("keyword_results") or []),
         keyword_error=_optional_str(summary_payload.get("keyword_error")),
     )
@@ -452,6 +636,13 @@ def _required_int(payload: dict[str, Any], field: str) -> int:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise LessonCutlineFullInputError(f"Required integer field is invalid: {field}") from exc
+
+
+def _required_str(payload: dict[str, Any], field: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise LessonCutlineFullInputError(f"Required string field is missing: {field}")
+    return value.strip()
 
 
 def _optional_int(value: Any) -> int | None:

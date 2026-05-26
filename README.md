@@ -753,20 +753,26 @@ Logic matching tái dùng từ thesis cũ gồm `_score`, `prefix_match_count`, 
 
 ### `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/cutline/full`
 
-Endpoint này xử lý cutline cho **một selected lesson**, không xử lý tất cả lessons và không phải global batch.
+Endpoint này xử lý cutline cho **một selected lesson**, không xử lý tất cả lessons và không phải global batch. Trong một lesson, endpoint gửi tất cả required cutline pages lên Kaggle bằng **một batch run** thay vì gọi Kaggle một lần cho từng chunk.
 
 Workflow:
 
 1. Load `chunk/{lesson_name}/chunk_*.json`.
 2. Sort chunks theo thứ tự số.
-3. Detect toàn bộ required cutlines trước:
+3. Xác định toàn bộ required cutlines:
    - `chunk_01` nếu `first_chunk=true`.
    - `chunk_02+` nếu `content_head=true`.
 4. Skip chunk có `content_head=false`.
-5. Nếu có required cutline fail, không rebuild official PDFs.
-6. Nếu tất cả required cutlines pass, build boundary map.
-7. Rebuild toàn bộ official `chunk_*.pdf` của lesson trong một pass từ `lesson/doc/{lesson_name}.pdf`.
-8. Sau khi PDF rebuild thành công, tự chạy keyword extraction cho cùng lesson.
+5. Render tất cả required start pages vào `debug/{chunk_name}/page.png`.
+6. Tạo một Kaggle package với `pages/{chunk_name}.png` và `run_request.json` có `mode="lesson_cutline_full"` + `items[]`.
+7. Kaggle trả `cutline_results.json` và `bbox/{chunk_name}.png`.
+8. Backend lưu từng kết quả vào `debug/{chunk_name}/cutline.json` và `debug/{chunk_name}/bbox.png`.
+9. Nếu có required cutline fail, không rebuild official PDFs.
+10. Nếu tất cả required cutlines pass, build boundary map.
+11. Rebuild toàn bộ official `chunk_*.pdf` của lesson trong một pass từ `lesson/doc/{lesson_name}.pdf`.
+12. Sau khi PDF rebuild thành công, tự chạy keyword extraction cho cùng lesson.
+
+One-chunk endpoint `/chunk/{chunk_name}/cutline` vẫn xử lý đúng một selected chunk trong một Kaggle run riêng.
 
 Request:
 
@@ -782,6 +788,8 @@ Response khi completed:
   "job_id": "3ce9f3cf-3a3a-4c49-b908-fabb50567db1",
   "lesson_name": "lesson_01",
   "status": "completed",
+  "kaggle_mode": "batch",
+  "kaggle_runs": 1,
   "processed_chunks": ["chunk_01", "chunk_03"],
   "skipped_chunks": [
     {
@@ -793,6 +801,9 @@ Response khi completed:
   "updated_pdfs": ["chunk_01.pdf", "chunk_02.pdf", "chunk_03.pdf"],
   "debug_summary_path": "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/debug/lesson_cutline_full.json",
   "keyword_extracted": true,
+  "keyword_paths": [
+    "workspace/outputs/3ce9f3cf-3a3a-4c49-b908-fabb50567db1/chunk/lesson_01/keyword/keyword_chunk_01.json"
+  ],
   "keyword_results": [
     {
       "chunk_name": "chunk_01",
@@ -1232,10 +1243,18 @@ Readiness script chỉ kiểm tra env, requirements và kernel source. Nó khôn
 - Không hard-code Gemini API key hoặc Kaggle API key trong source code.
 - Không log secret value.
 - Chỉ log tên biến môi trường bị thiếu.
-- Cutline chỉ upload package tối thiểu cho chunk được chọn:
+- One-chunk cutline chỉ upload package tối thiểu cho chunk được chọn:
 
 ```text
 page.png
+run_request.json
+dataset-metadata.json
+```
+
+Full-lesson cutline chỉ upload package tối thiểu cho required cutlines của selected lesson:
+
+```text
+pages/{chunk_name}.png
 run_request.json
 dataset-metadata.json
 ```
@@ -1246,7 +1265,6 @@ Không upload:
 workspace/
 original.pdf
 lesson/doc/{lesson_name}.pdf
-chunk khác
 lesson khác
 ```
 

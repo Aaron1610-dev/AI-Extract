@@ -114,6 +114,81 @@ def run_kaggle_cutline_debug(
     return result
 
 
+def run_kaggle_cutline_batch(
+    *,
+    request_payload: dict[str, Any],
+    page_image_paths: dict[str, Path],
+    request_dir: Path,
+) -> dict[str, Any]:
+    """Submit many rendered cutline pages to Kaggle in one kernel run."""
+
+    config = _load_config()
+    _ensure_kaggle_cli(config)
+
+    request_id = str(request_payload.get("request_id") or "").strip()
+    if not request_id:
+        raise KaggleCutlineDebugError("request_payload is missing request_id.")
+
+    items = request_payload.get("items")
+    if not isinstance(items, list) or not items:
+        raise KaggleCutlineDebugError("request_payload must include non-empty items.")
+
+    for chunk_name, page_image_path in page_image_paths.items():
+        if not page_image_path.exists():
+            raise FileNotFoundError(
+                f"Rendered page image for {chunk_name} was not found: {page_image_path}"
+            )
+
+    dataset_dir = request_dir / "dataset"
+    kernel_dir = request_dir / "kernel"
+    download_dir = request_dir / "download"
+    _prepare_batch_dataset(
+        dataset_dir=dataset_dir,
+        dataset_ref=config.dataset_ref,
+        request_payload=request_payload,
+        page_image_paths=page_image_paths,
+    )
+    _prepare_kernel(
+        kernel_dir=kernel_dir,
+        kernel_ref=config.kernel_ref,
+        dataset_ref=config.dataset_ref,
+    )
+
+    _publish_dataset(config=config, dataset_dir=dataset_dir, request_id=request_id)
+    _push_kernel(config=config, kernel_dir=kernel_dir)
+    _wait_kernel_complete(config=config)
+    _download_kernel_output(config=config, download_dir=download_dir)
+
+    status = _read_status(download_dir=download_dir, request_id=request_id)
+    if status and status.get("request_id") != request_id:
+        raise KaggleCutlineDebugError(
+            "Downloaded Kaggle status belongs to a different request_id."
+        )
+    if status and status.get("status") == "failed":
+        raise KaggleCutlineDebugError(
+            f"Kaggle cutline kernel failed: {status.get('error') or status}"
+        )
+
+    results_path = download_dir / "cutline_results.json"
+    if not results_path.exists():
+        raise KaggleCutlineDebugError(
+            f"Kaggle batch cutline output was not found: {results_path}"
+        )
+
+    result = read_json(results_path)
+    if not isinstance(result, dict):
+        raise KaggleCutlineDebugError(
+            f"Kaggle batch result JSON must be an object: {results_path}"
+        )
+    if result.get("request_id") != request_id:
+        raise KaggleCutlineDebugError(
+            "Downloaded Kaggle cutline_results.json belongs to a different request_id."
+        )
+
+    result["_kaggle_output_dir"] = str(download_dir)
+    return result
+
+
 def check_kaggle_cutline_readiness() -> dict[str, Any]:
     _load_local_env()
     missing_env = _missing_required_env()
@@ -273,6 +348,32 @@ def _prepare_dataset(
         shutil.rmtree(dataset_dir)
     dataset_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(page_image_path, dataset_dir / "page.png")
+    write_json(dataset_dir / "run_request.json", request_payload)
+    write_json(
+        dataset_dir / "dataset-metadata.json",
+        {
+            "title": dataset_ref.split("/", 1)[1],
+            "id": dataset_ref,
+            "licenses": [{"name": "CC0-1.0"}],
+        },
+    )
+
+
+def _prepare_batch_dataset(
+    *,
+    dataset_dir: Path,
+    dataset_ref: str,
+    request_payload: dict[str, Any],
+    page_image_paths: dict[str, Path],
+) -> None:
+    if dataset_dir.exists():
+        shutil.rmtree(dataset_dir)
+    pages_dir = dataset_dir / "pages"
+    pages_dir.mkdir(parents=True, exist_ok=True)
+
+    for chunk_name, page_image_path in page_image_paths.items():
+        shutil.copyfile(page_image_path, pages_dir / f"{chunk_name}.png")
+
     write_json(dataset_dir / "run_request.json", request_payload)
     write_json(
         dataset_dir / "dataset-metadata.json",

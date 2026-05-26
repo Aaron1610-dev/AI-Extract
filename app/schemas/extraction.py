@@ -164,11 +164,14 @@ class LessonCutlineFullResponse(BaseModel):
     job_id: str
     lesson_name: str
     status: str
+    kaggle_mode: str | None = None
+    kaggle_runs: int | None = None
     processed_chunks: list[str]
     skipped_chunks: list[dict[str, str]]
     failed_chunks: list[dict[str, str]]
     updated_pdfs: list[str]
     debug_summary_path: str
     keyword_extracted: bool = False
+    keyword_paths: list[str] = Field(default_factory=list)
     keyword_results: list[LessonKeywordDebugResult] = Field(default_factory=list)
     keyword_error: str | None = None

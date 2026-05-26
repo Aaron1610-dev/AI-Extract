@@ -11,7 +11,7 @@ AI-Extract là dịch vụ FastAPI nhẹ để xử lý PDF sách giáo khoa the
 5. Cho phép review/chỉnh sửa JSON bằng API.
 6. Approve topics trước, sau đó build và approve lessons.
 
-AI-Extract được tách khỏi backend luận văn đầy đủ trong `FastAPI-Khoa-Luan`. Repository này không phụ trách database sync, UI review, batch chunk extraction, MinIO, MongoDB, PostgreSQL, Neo4j hoặc heavy import/sync. Kaggle/PaddleOCR hiện chỉ được dùng ở endpoint debug cutline cho một chunk, chưa phải batch pipeline.
+AI-Extract được tách khỏi backend luận văn đầy đủ trong `FastAPI-Khoa-Luan`. Repository này không phụ trách database sync, UI review, batch chunk extraction, MinIO, MongoDB, PostgreSQL, Neo4j hoặc heavy import/sync. Kaggle/PaddleOCR được dùng cho one-chunk cutline debug và cho full-lesson cutline batch của một selected lesson; không có global all-lessons batch pipeline.
 
 ## 2. Kiến trúc source code
 
@@ -683,11 +683,15 @@ Endpoint:
 POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/cutline/full
 ```
 
-Endpoint này chỉ xử lý một selected lesson, không xử lý toàn bộ lessons và không implement global batch. Workflow:
+Endpoint này chỉ xử lý một selected lesson, không xử lý toàn bộ lessons. Workflow dùng một Kaggle batch run cho tất cả required cutlines của lesson:
 
 - Load `chunk/{lesson_name}/chunk_*.json` và sort theo số chunk.
-- Detect cutline trước cho các chunk cần boundary: `chunk_01` khi `first_chunk=true`, và `chunk_02+` khi `content_head=true`.
+- Detect các chunk cần boundary: `chunk_01` khi `first_chunk=true`, và `chunk_02+` khi `content_head=true`.
 - Skip các chunk `content_head=false`.
+- Render toàn bộ required start pages vào `debug/{chunk_name}/page.png`.
+- Gửi một package Kaggle duy nhất gồm `pages/{chunk_name}.png` và `run_request.json` có `mode="lesson_cutline_full"` + `items[]`.
+- Kaggle trả `cutline_results.json` và `bbox/{chunk_name}.png` cho nhiều chunk trong cùng một run.
+- Backend lưu lại từng kết quả vào `debug/{chunk_name}/cutline.json` và copy `debug/{chunk_name}/bbox.png` nếu có.
 - Nếu bất kỳ required cutline nào fail hoặc confidence không đủ, ghi summary `status=failed` và không rebuild official PDFs.
 - Nếu tất cả required cutlines hợp lệ, build boundary map rồi rebuild toàn bộ `chunk/{lesson_name}/doc/chunk_*.pdf` trong một pass từ `lesson/doc/{lesson_name}.pdf`.
 - Sau khi official chunk PDFs rebuild thành công, endpoint tự gọi keyword extraction cho cùng lesson.
@@ -699,6 +703,8 @@ Output summary:
 ```text
 workspace/outputs/{job_id}/chunk/{lesson_name}/debug/lesson_cutline_full.json
 ```
+
+Summary có `kaggle_mode="batch"`, `kaggle_request_id`, `kaggle_runs=1` khi có required cutlines, `processed_chunks`, `failed_chunks`, `cutline_boundaries`, `updated_pdfs`, `keyword_extracted`, và `keyword_paths`.
 
 Full lesson rebuild không tạo thêm PDF folder, không tạo preview/backup folder, không sửa chunk JSON và không update job status. Với mỗi chunk, start boundary lấy từ cutline của chính chunk nếu có; end boundary lấy từ cutline của next chunk nếu next chunk start page nằm trong range hiện tại. PDF được ghi trực tiếp vào `chunk/{lesson_name}/doc/`.
 
@@ -823,17 +829,17 @@ Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuy
 - Backend chỉ render trang `chunk.start` thành PNG, tạo `run_request.json`, tự build/push Kaggle dataset/kernel debug-only và đọc output.
 - Loại bỏ `paddleocr` khỏi backend requirements; AI-Extract backend không import/call PaddleOCR local.
 - Thay placeholder external-command cũ bằng adapter Kaggle thật dựa trên dataset/kernel/status/output flow của project cũ.
-- Cutline debug không sửa chunk JSON, không update job status và không implement batch cutline processing.
+- One-chunk cutline debug không sửa chunk JSON, không update job status và không implement batch cutline processing.
 - Thêm readiness script `scripts/check_kaggle_cutline_ready.py` và tài liệu `docs/KAGGLE_CUTLINE_READINESS.md` để kiểm tra Kaggle config trước khi chạy endpoint.
 - Readiness check không gọi Kaggle và không in secret values.
 - Cập nhật kernel one-chunk để dùng lại old thesis chunk cutline scoring/matching logic từ `chunk_postprocess.py`.
 - `cutline_result.json` giờ có thêm `match_score`, `matched_prefix`, `expected_len`, `match_ratio`, `prefix_hits`, `lcs`, `cov_obs`, `cov_exp`, `best_mode`, `weak_cut`, `force_cut`, `early_stop`.
 - One-chunk cutline endpoint `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/chunk/{chunk_name}/cutline` now detects with Kaggle/PaddleOCR and auto-promotes official `chunk/{lesson_name}/doc/chunk_*.pdf` when matched and applicable.
 - Public promote route removed; `/cutline` is the only public one-chunk cutline endpoint.
-- Auto-promote recuts from `lesson/doc/{lesson_name}.pdf` and overwrites directly `chunk/{lesson_name}/doc/chunk_*.pdf`; không tạo preview/backup PDF folder, không gọi Kaggle/PaddleOCR trong promote step và không batch process.
+- Auto-promote recuts from `lesson/doc/{lesson_name}.pdf` and overwrites directly `chunk/{lesson_name}/doc/chunk_*.pdf`; không tạo preview/backup PDF folder và không gọi Kaggle/PaddleOCR trong promote step.
 - Refactor cutline debug artifacts vào folder ổn định `chunk/{lesson_name}/debug/{chunk_name}/` gồm `page.png`, `bbox.png`, `cutline.json`, `cutline_promote.json`; rerun cùng chunk sẽ overwrite các file này.
 - Thêm full-lesson cutline endpoint cho một selected lesson: `POST /api/extract/jobs/{job_id}/chunks/debug/lesson/{lesson_name}/cutline/full`.
-- Full-lesson cutline detect tất cả required boundaries trước, fail thì không rebuild PDFs, success thì rebuild toàn bộ `chunk/{lesson_name}/doc/chunk_*.pdf` trong một pass từ `lesson/doc/{lesson_name}.pdf`; không xử lý all lessons và không batch toàn cục.
+- Full-lesson cutline sends all required boundary pages for one selected lesson to Kaggle in one batch run, fail thì không rebuild PDFs, success thì rebuild toàn bộ `chunk/{lesson_name}/doc/chunk_*.pdf` trong một pass từ `lesson/doc/{lesson_name}.pdf`; không xử lý all lessons và không batch toàn cục.
 - Full-lesson cutline success tự chạy keyword extraction cho cùng lesson sau khi PDFs đã rebuild; nếu keyword lỗi thì giữ PDFs đã cập nhật và trả `completed_with_keyword_error`.
 - Thêm keyword extraction debug endpoint cho một selected lesson: `POST /api/extract/jobs/{job_id}/keywords/debug/lesson/{lesson_name}/extract`.
 - Keyword extraction giữ file-based review output trong `chunk/{lesson_name}/keyword/keyword_chunk_*.json`: một chunk dùng lesson PDF và bắt buộc 10 keywords, nhiều chunk dùng từng finalized chunk PDF và bắt buộc 5 keywords/chunk; retry tối đa 3 lần nếu Gemini trả thiếu, fail nếu vẫn thiếu; chưa thêm DB/object-storage/import logic.

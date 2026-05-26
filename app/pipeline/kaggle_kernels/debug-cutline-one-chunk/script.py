@@ -48,6 +48,14 @@ def find_input_file(name: str) -> Path:
     return matches[0]
 
 
+def find_input_path(relative_path: str) -> Path:
+    normalized = relative_path.strip().lstrip("/")
+    matches = sorted(Path("/kaggle/input").rglob(normalized))
+    if matches:
+        return matches[0]
+    return find_input_file(Path(normalized).name)
+
+
 def load_request() -> dict:
     request_path = find_input_file("run_request.json")
     payload = json.loads(request_path.read_text(encoding="utf-8"))
@@ -685,6 +693,7 @@ def draw_bbox(page_path: Path, output_path: Path, match_payload: dict | None, li
     image = cv2.imread(str(page_path))
     if image is None:
         return
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     height, width = image.shape[:2]
     for line in lines:
         x0, y0, x1, y1 = bbox_ints(line)
@@ -696,14 +705,7 @@ def draw_bbox(page_path: Path, output_path: Path, match_payload: dict | None, li
     cv2.imwrite(str(output_path), image)
 
 
-def main() -> None:
-    sh("python -m pip -q install --upgrade pip")
-    sh("python -m pip -q install paddlepaddle==3.3.0")
-    sh("python -m pip -q uninstall -y paddleocr paddlex || true")
-    sh("python -m pip -q install --no-deps paddleocr==2.7.3")
-    sh("python -m pip -q install opencv-python-headless pyclipper shapely imgaug pillow tqdm lmdb attrdict fire rapidfuzz visualdl")
-
-    import cv2
+def build_ocr() -> Any:
     import numpy as np
 
     if not hasattr(np, "sctypes"):
@@ -715,19 +717,10 @@ def main() -> None:
             "others": [np.bool_, np.bytes_, np.str_, np.void],
         }
 
-    run_request = load_request()
-    request_id = str(run_request.get("request_id") or "unknown")
-    write_status(request_id, "started")
-
-    page_path = find_input_file("page.png")
-    image = cv2.imread(str(page_path))
-    if image is None:
-        raise RuntimeError(f"Could not read page image: {page_path}")
-
     module = __import__("paddleocr", fromlist=["Paddle" + "OCR"])
     ocr_class = getattr(module, "Paddle" + "OCR")
     try:
-        ocr = ocr_class(
+        return ocr_class(
             lang="vi",
             use_textline_orientation=False,
             use_doc_orientation_classify=False,
@@ -736,7 +729,15 @@ def main() -> None:
             text_det_limit_side_len=4096,
         )
     except Exception:
-        ocr = ocr_class(lang="vi", det_limit_type="max", det_limit_side_len=4096)
+        return ocr_class(lang="vi", det_limit_type="max", det_limit_side_len=4096)
+
+
+def process_cutline_item(ocr: Any, item: dict, page_path: Path, bbox_path: Path) -> dict:
+    import cv2
+
+    image = cv2.imread(str(page_path))
+    if image is None:
+        raise RuntimeError(f"Could not read page image: {page_path}")
 
     result = ocr.ocr(image, cls=False)
     dets = parse_ocr_result(result)
@@ -744,12 +745,75 @@ def main() -> None:
     match_payload = match_heading_title(
         lines,
         dets,
-        heading=str(run_request.get("heading") or ""),
-        title=str(run_request.get("title") or ""),
+        heading=str(item.get("heading") or ""),
+        title=str(item.get("title") or ""),
     )
-
-    bbox_path = WORKING_DIR / "bbox.png"
     draw_bbox(page_path, bbox_path, match_payload if match_payload.get("matched") else None, lines)
+    height, width = image.shape[:2]
+    return {
+        "chunk_name": item.get("chunk_name"),
+        "page_number": item.get("page_number"),
+        "image_file": item.get("image_file"),
+        **match_payload,
+        "image_width": int(width),
+        "image_height": int(height),
+    }
+
+
+def main() -> None:
+    sh("python -m pip -q install --upgrade pip")
+    sh("python -m pip -q install paddlepaddle==3.3.0")
+    sh("python -m pip -q uninstall -y paddleocr paddlex || true")
+    sh("python -m pip -q install --no-deps paddleocr==2.7.3")
+    sh("python -m pip -q install opencv-python-headless pyclipper shapely imgaug pillow tqdm lmdb attrdict fire rapidfuzz visualdl")
+
+    run_request = load_request()
+    request_id = str(run_request.get("request_id") or "unknown")
+    write_status(request_id, "started")
+
+    ocr = build_ocr()
+    items = run_request.get("items")
+    if isinstance(items, list) and items:
+        results = []
+        bbox_dir = WORKING_DIR / "bbox"
+        for index, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                continue
+            chunk_name = str(item.get("chunk_name") or f"item_{index:02d}")
+            image_file = str(item.get("image_file") or f"pages/{chunk_name}.png")
+            results.append(
+                process_cutline_item(
+                    ocr,
+                    item,
+                    find_input_path(image_file),
+                    bbox_dir / f"{chunk_name}.png",
+                )
+            )
+
+        payload = {
+            "request_id": request_id,
+            "job_id": run_request.get("job_id"),
+            "lesson_name": run_request.get("lesson_name"),
+            "mode": run_request.get("mode") or "lesson_cutline_full",
+            "results": results,
+        }
+        write_json(WORKING_DIR / "cutline_results.json", payload)
+        write_status(
+            request_id,
+            "completed",
+            mode=payload["mode"],
+            result_count=len(results),
+            matched_count=sum(1 for item in results if item.get("matched")),
+        )
+        return
+
+    page_path = find_input_file("page.png")
+    match_payload = process_cutline_item(
+        ocr,
+        run_request,
+        page_path,
+        WORKING_DIR / "bbox.png",
+    )
 
     payload = {
         "request_id": request_id,
@@ -757,7 +821,11 @@ def main() -> None:
         "lesson_name": run_request.get("lesson_name"),
         "chunk_name": run_request.get("chunk_name"),
         "page_number": run_request.get("page_number"),
-        **match_payload,
+        **{
+            key: value
+            for key, value in match_payload.items()
+            if key not in {"chunk_name", "page_number"}
+        },
     }
     write_json(WORKING_DIR / "cutline_result.json", payload)
     write_status(request_id, "completed", matched=bool(match_payload.get("matched")))
