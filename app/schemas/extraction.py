@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ExtractionJobStatus(str, Enum):
@@ -129,47 +129,33 @@ class ChunkApproveResponse(BaseModel):
     chunks_approved_path: str
 
 
-class ChunkCutlineDebugResponse(BaseModel):
-    job_id: str
-    lesson_name: str
-    chunk_name: str
-    matched: bool
-    page_number: int
-    heading: str
-    title: str
-    matched_text: str | None = None
-    bbox: list[int] | None = None
-    y_cut: int | None = None
-    match_score: int | None = None
-    matched_prefix: int | None = None
-    expected_len: int | None = None
-    match_ratio: float | None = None
-    best_mode: str | None = None
-    weak_cut: bool | None = None
-    force_cut: bool | None = None
-    early_stop: bool | None = None
-    reason: str | None = None
-    debug_json_path: str
-    debug_page_path: str | None = None
-    debug_bbox_path: str | None = None
-    promoted: bool = False
-    promote_status: str = "not_run"
-    promote_reason: str | None = None
-    previous_chunk: str | None = None
-    selected_chunk_pdf: str | None = None
-    previous_chunk_pdf: str | None = None
-    debug_promote_json_path: str | None = None
-
-
 class KeywordItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     keyword_name: str
 
 
 class LessonKeywordDebugResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     chunk_name: str
     keyword_count: int
     keywords: list[KeywordItem]
-    keyword_path: str
+    keyword_path: str | None = None
+
+
+class LessonKeywordEditResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chunk_name: str
+    keyword_count: int
+    keywords: list[KeywordItem]
+
+
+class LessonKeywordListRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    results: list[LessonKeywordEditResult]
 
 
 class LessonKeywordDebugResponse(BaseModel):
@@ -177,6 +163,22 @@ class LessonKeywordDebugResponse(BaseModel):
     lesson_name: str
     chunk_count: int
     results: list[LessonKeywordDebugResult]
+
+
+class LessonKeywordReviewResponse(BaseModel):
+    job_id: str
+    lesson_name: str
+    status: str
+    results: list[LessonKeywordDebugResult]
+
+
+class LessonKeywordApproveResponse(BaseModel):
+    job_id: str
+    lesson_name: str
+    status: str
+    approved_at: str
+    results: list[LessonKeywordDebugResult]
+    keywords_approved_path: str
 
 
 class LessonCutlineFullResponse(BaseModel):

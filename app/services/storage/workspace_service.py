@@ -152,6 +152,10 @@ def get_chunk_keyword_path(job_id: str, lesson_name: str, chunk_name: str) -> Pa
     return get_chunk_lesson_keyword_dir(job_id, lesson_name) / f"keyword_{chunk_name}.json"
 
 
+def get_keywords_approved_json_path(job_id: str, lesson_name: str) -> Path:
+    return get_chunk_lesson_keyword_dir(job_id, lesson_name) / "keywords_approved.json"
+
+
 def get_chunk_cutline_request_dir(
     job_id: str,
     lesson_name: str,

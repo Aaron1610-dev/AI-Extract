@@ -6,14 +6,13 @@ import shutil
 from typing import Any
 from uuid import uuid4
 
-from app.schemas.extraction import ChunkCutlineDebugResponse
 from app.services.extraction.chunk_cutline_promote_service import (
     InternalPromoteInputError,
     promote_cutline_for_chunk,
 )
 from app.services.extraction.job_service import get_job
 from app.services.kaggle_cutline_debug_service import (
-    KaggleCutlineDebugNotConfigured,
+    KaggleCutlineNotConfigured,
     run_kaggle_cutline_debug,
 )
 from app.services.storage.workspace_service import (
@@ -66,7 +65,7 @@ def detect_debug_cutline_for_chunk(
     job_id: str,
     lesson_name: str,
     chunk_name: str,
-) -> ChunkCutlineDebugResponse:
+) -> dict[str, Any]:
     detection = detect_cutline_artifacts_for_chunk(
         job_id=job_id,
         lesson_name=lesson_name,
@@ -100,39 +99,39 @@ def detect_debug_cutline_for_chunk(
                 promote_status = "skipped"
                 promote_reason = str(exc)
 
-    return ChunkCutlineDebugResponse(
-        job_id=job_id,
-        lesson_name=lesson_name,
-        chunk_name=chunk_name,
-        matched=detection.matched,
-        page_number=detection.page_number,
-        heading=detection.heading,
-        title=detection.title,
-        matched_text=detection.matched_text,
-        bbox=detection.bbox,
-        y_cut=detection.y_cut,
-        match_score=detection.match_score,
-        matched_prefix=detection.matched_prefix,
-        expected_len=detection.expected_len,
-        match_ratio=detection.match_ratio,
-        best_mode=detection.best_mode,
-        weak_cut=detection.weak_cut,
-        force_cut=detection.force_cut,
-        early_stop=detection.early_stop,
-        reason=detection.reason,
-        debug_json_path=detection.debug_json_path,
-        debug_page_path=detection.debug_page_path,
-        debug_bbox_path=detection.debug_bbox_path,
-        promoted=bool(promote_response and promote_response.promoted),
-        promote_status=promote_status,
-        promote_reason=promote_reason,
-        previous_chunk=promote_response.previous_chunk if promote_response else None,
-        selected_chunk_pdf=promote_response.selected_chunk_pdf if promote_response else None,
-        previous_chunk_pdf=promote_response.previous_chunk_pdf if promote_response else None,
-        debug_promote_json_path=(
+    return {
+        "job_id": job_id,
+        "lesson_name": lesson_name,
+        "chunk_name": chunk_name,
+        "matched": detection.matched,
+        "page_number": detection.page_number,
+        "heading": detection.heading,
+        "title": detection.title,
+        "matched_text": detection.matched_text,
+        "bbox": detection.bbox,
+        "y_cut": detection.y_cut,
+        "match_score": detection.match_score,
+        "matched_prefix": detection.matched_prefix,
+        "expected_len": detection.expected_len,
+        "match_ratio": detection.match_ratio,
+        "best_mode": detection.best_mode,
+        "weak_cut": detection.weak_cut,
+        "force_cut": detection.force_cut,
+        "early_stop": detection.early_stop,
+        "reason": detection.reason,
+        "debug_json_path": detection.debug_json_path,
+        "debug_page_path": detection.debug_page_path,
+        "debug_bbox_path": detection.debug_bbox_path,
+        "promoted": bool(promote_response and promote_response.promoted),
+        "promote_status": promote_status,
+        "promote_reason": promote_reason,
+        "previous_chunk": promote_response.previous_chunk if promote_response else None,
+        "selected_chunk_pdf": promote_response.selected_chunk_pdf if promote_response else None,
+        "previous_chunk_pdf": promote_response.previous_chunk_pdf if promote_response else None,
+        "debug_promote_json_path": (
             promote_response.debug_promote_json_path if promote_response else None
         ),
-    )
+    }
 
 
 def detect_cutline_artifacts_for_chunk(
@@ -357,7 +356,7 @@ def _is_first_chunk(*, chunk_name: str, selected_chunk: dict[str, Any]) -> bool:
 __all__ = [
     "ChunkCutlineInputError",
     "CutlineDetectionResult",
-    "KaggleCutlineDebugNotConfigured",
+    "KaggleCutlineNotConfigured",
     "detect_cutline_artifacts_for_chunk",
     "detect_debug_cutline_for_chunk",
 ]

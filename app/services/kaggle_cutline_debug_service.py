@@ -28,11 +28,11 @@ REQUIRED_ENV_KEYS = [
 ]
 
 
-class KaggleCutlineDebugNotConfigured(RuntimeError):
+class KaggleCutlineNotConfigured(RuntimeError):
     pass
 
 
-class KaggleCutlineDebugError(RuntimeError):
+class KaggleCutlineError(RuntimeError):
     pass
 
 
@@ -63,7 +63,7 @@ def run_kaggle_cutline_debug(
 
     request_id = str(request_payload.get("request_id") or "").strip()
     if not request_id:
-        raise KaggleCutlineDebugError("request_payload is missing request_id.")
+        raise KaggleCutlineError("request_payload is missing request_id.")
 
     dataset_dir = request_dir / "dataset"
     kernel_dir = request_dir / "kernel"
@@ -87,26 +87,26 @@ def run_kaggle_cutline_debug(
 
     status = _read_status(download_dir=download_dir, request_id=request_id)
     if status and status.get("request_id") != request_id:
-        raise KaggleCutlineDebugError(
+        raise KaggleCutlineError(
             "Downloaded Kaggle status belongs to a different request_id."
         )
     if status and status.get("status") == "failed":
-        raise KaggleCutlineDebugError(
+        raise KaggleCutlineError(
             f"Kaggle cutline kernel failed: {status.get('error') or status}"
         )
 
     result_path = download_dir / "cutline_result.json"
     if not result_path.exists():
-        raise KaggleCutlineDebugError(
+        raise KaggleCutlineError(
             f"Kaggle cutline output was not found: {result_path}"
         )
 
     result = read_json(result_path)
     if not isinstance(result, dict):
-        raise KaggleCutlineDebugError(f"Kaggle result JSON must be an object: {result_path}")
+        raise KaggleCutlineError(f"Kaggle result JSON must be an object: {result_path}")
 
     if result.get("request_id") != request_id:
-        raise KaggleCutlineDebugError(
+        raise KaggleCutlineError(
             "Downloaded Kaggle cutline_result.json belongs to a different request_id."
         )
 
@@ -127,11 +127,11 @@ def run_kaggle_cutline_batch(
 
     request_id = str(request_payload.get("request_id") or "").strip()
     if not request_id:
-        raise KaggleCutlineDebugError("request_payload is missing request_id.")
+        raise KaggleCutlineError("request_payload is missing request_id.")
 
     items = request_payload.get("items")
     if not isinstance(items, list) or not items:
-        raise KaggleCutlineDebugError("request_payload must include non-empty items.")
+        raise KaggleCutlineError("request_payload must include non-empty items.")
 
     for chunk_name, page_image_path in page_image_paths.items():
         if not page_image_path.exists():
@@ -161,27 +161,27 @@ def run_kaggle_cutline_batch(
 
     status = _read_status(download_dir=download_dir, request_id=request_id)
     if status and status.get("request_id") != request_id:
-        raise KaggleCutlineDebugError(
+        raise KaggleCutlineError(
             "Downloaded Kaggle status belongs to a different request_id."
         )
     if status and status.get("status") == "failed":
-        raise KaggleCutlineDebugError(
+        raise KaggleCutlineError(
             f"Kaggle cutline kernel failed: {status.get('error') or status}"
         )
 
     results_path = download_dir / "cutline_results.json"
     if not results_path.exists():
-        raise KaggleCutlineDebugError(
+        raise KaggleCutlineError(
             f"Kaggle batch cutline output was not found: {results_path}"
         )
 
     result = read_json(results_path)
     if not isinstance(result, dict):
-        raise KaggleCutlineDebugError(
+        raise KaggleCutlineError(
             f"Kaggle batch result JSON must be an object: {results_path}"
         )
     if result.get("request_id") != request_id:
-        raise KaggleCutlineDebugError(
+        raise KaggleCutlineError(
             "Downloaded Kaggle cutline_results.json belongs to a different request_id."
         )
 
@@ -263,7 +263,7 @@ def _load_config(*, validate_cli: bool = True) -> KaggleCutlineConfig:
 
     missing = _missing_required_env()
     if missing:
-        raise KaggleCutlineDebugNotConfigured(
+        raise KaggleCutlineNotConfigured(
             "Kaggle cutline debug is not configured. Missing required "
             f"variables: {', '.join(missing)}."
         )
@@ -320,7 +320,7 @@ def _run_kaggle_command(
         check=False,
     )
     if check and completed.returncode != 0:
-        raise KaggleCutlineDebugError(
+        raise KaggleCutlineError(
             "Kaggle command failed "
             f"(exit={completed.returncode}, cmd={' '.join(command)}): "
             f"{completed.stderr.strip() or completed.stdout.strip()}"
@@ -330,7 +330,7 @@ def _run_kaggle_command(
 
 def _ensure_kaggle_cli(config: KaggleCutlineConfig) -> None:
     if shutil.which("kaggle") is None:
-        raise KaggleCutlineDebugNotConfigured(
+        raise KaggleCutlineNotConfigured(
             "Kaggle CLI is not installed. Install the kaggle package and configure "
             "AI_EXTRACT_KAGGLE_* settings."
         )
@@ -450,7 +450,7 @@ def _publish_dataset(
         check=False,
     )
     if create.returncode != 0:
-        raise KaggleCutlineDebugError(
+        raise KaggleCutlineError(
             "Failed to create/version Kaggle dataset. "
             f"version_error={version.stderr.strip() or version.stdout.strip()} "
             f"create_error={create.stderr.strip() or create.stdout.strip()}"
@@ -475,9 +475,9 @@ def _wait_kernel_complete(config: KaggleCutlineConfig) -> None:
         if "KernelWorkerStatus.COMPLETE" in status:
             return
         if "KernelWorkerStatus.FAILED" in status or "KernelWorkerStatus.ERROR" in status:
-            raise KaggleCutlineDebugError(f"Kaggle kernel failed: {status}")
+            raise KaggleCutlineError(f"Kaggle kernel failed: {status}")
         if time.monotonic() - started > config.timeout_seconds:
-            raise KaggleCutlineDebugError(
+            raise KaggleCutlineError(
                 f"Timed out waiting for Kaggle kernel: {config.kernel_ref}"
             )
 

@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from datetime import UTC, datetime
 
 from app.pipeline.gemini_extract.prompts.keyword_prompt import (
     build_keyword_prompt,
     build_keyword_retry_prompt,
 )
-from app.schemas.extraction import LessonKeywordDebugResponse
+from app.schemas.extraction import (
+    LessonKeywordApproveResponse,
+    LessonKeywordDebugResponse,
+    LessonKeywordDebugResult,
+    LessonKeywordReviewResponse,
+)
 from app.services.extraction.job_service import get_job
 from app.services.gemini.client import generate_with_pdf
 from app.services.storage.workspace_service import (
@@ -15,6 +21,7 @@ from app.services.storage.workspace_service import (
     get_chunk_keyword_path,
     get_chunk_lesson_dir,
     get_chunk_lesson_keyword_dir,
+    get_keywords_approved_json_path,
     get_lesson_doc_path,
     get_lessons_approved_json_path,
     read_json,
@@ -33,6 +40,10 @@ class KeywordDebugInputError(ValueError):
 
 
 class KeywordExtractionCountError(RuntimeError):
+    pass
+
+
+class KeywordReviewInputError(ValueError):
     pass
 
 
@@ -118,6 +129,99 @@ def extract_keywords_for_lesson_debug(
     )
 
 
+def get_keywords_for_lesson(
+    job_id: str,
+    lesson_name: str,
+) -> LessonKeywordReviewResponse:
+    get_job(job_id)
+    results = _read_keyword_results(job_id=job_id, lesson_name=lesson_name)
+    approved_path = get_keywords_approved_json_path(job_id, lesson_name)
+    return LessonKeywordReviewResponse(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        status="approved_keywords" if approved_path.exists() else "reviewing_keywords",
+        results=results,
+    )
+
+
+def update_keywords_for_lesson(
+    job_id: str,
+    lesson_name: str,
+    results: list[LessonKeywordDebugResult],
+) -> LessonKeywordReviewResponse:
+    get_job(job_id)
+    validated = _validate_keyword_results(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        results=results,
+    )
+    for result in validated:
+        keyword_path = get_chunk_keyword_path(job_id, lesson_name, result.chunk_name)
+        write_json(
+            keyword_path,
+            {
+                "chunk_name": result.chunk_name,
+                "keyword_count": result.keyword_count,
+                "keywords": [
+                    {"keyword_name": item.keyword_name}
+                    for item in result.keywords
+                ],
+            },
+        )
+
+    approved_path = get_keywords_approved_json_path(job_id, lesson_name)
+    if approved_path.exists():
+        approved_path.unlink()
+
+    return LessonKeywordReviewResponse(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        status="reviewing_keywords",
+        results=_read_keyword_results(job_id=job_id, lesson_name=lesson_name),
+    )
+
+
+def approve_keywords_for_lesson(
+    job_id: str,
+    lesson_name: str,
+) -> LessonKeywordApproveResponse:
+    get_job(job_id)
+    results = _validate_keyword_results(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        results=_read_keyword_results(job_id=job_id, lesson_name=lesson_name),
+    )
+    approved_at = datetime.now(UTC).isoformat()
+    approved_path = get_keywords_approved_json_path(job_id, lesson_name)
+    payload = {
+        "job_id": job_id,
+        "lesson_name": lesson_name,
+        "status": "approved_keywords",
+        "approved_at": approved_at,
+        "results": [
+            {
+                "chunk_name": result.chunk_name,
+                "keyword_count": result.keyword_count,
+                "keywords": [
+                    {"keyword_name": item.keyword_name}
+                    for item in result.keywords
+                ],
+                "keyword_path": result.keyword_path,
+            }
+            for result in results
+        ],
+    }
+    write_json(approved_path, payload)
+    return LessonKeywordApproveResponse(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        status="approved_keywords",
+        approved_at=approved_at,
+        results=results,
+        keywords_approved_path=str(approved_path),
+    )
+
+
 def _extract_source_keywords(
     *,
     source_type: str,
@@ -198,6 +302,129 @@ def normalize_keyword_payload(
         "keyword_count": keyword_count,
         "keywords": keywords,
     }
+
+
+def _read_keyword_results(
+    *,
+    job_id: str,
+    lesson_name: str,
+) -> list[LessonKeywordDebugResult]:
+    keyword_dir = get_chunk_lesson_keyword_dir(job_id, lesson_name)
+    if not keyword_dir.exists():
+        raise FileNotFoundError(
+            "Keywords have not been generated yet. Run lesson finalize first."
+        )
+
+    results: list[LessonKeywordDebugResult] = []
+    for path in sorted(keyword_dir.glob("keyword_chunk_*.json"), key=lambda item: _chunk_sort_key(item.stem.replace("keyword_", ""))):
+        payload = read_json(path)
+        if not isinstance(payload, dict):
+            raise KeywordReviewInputError(f"Keyword JSON must contain an object: {path}")
+        results.append(
+            LessonKeywordDebugResult(
+                chunk_name=str(payload.get("chunk_name") or path.stem.replace("keyword_", "")),
+                keyword_count=_required_int(payload, "keyword_count"),
+                keywords=_normalize_keywords_strict(payload.get("keywords")),
+                keyword_path=str(path),
+            )
+        )
+
+    if not results:
+        raise FileNotFoundError(
+            "Keywords have not been generated yet. Run lesson finalize first."
+        )
+
+    return results
+
+
+def _validate_keyword_results(
+    *,
+    job_id: str,
+    lesson_name: str,
+    results: list[LessonKeywordDebugResult],
+) -> list[LessonKeywordDebugResult]:
+    if not results:
+        raise KeywordReviewInputError("results must be non-empty.")
+
+    chunks = _load_lesson_chunks(job_id=job_id, lesson_name=lesson_name)
+    if not chunks:
+        raise KeywordReviewInputError(f"No chunk JSON files were found for lesson: {lesson_name}")
+    chunk_names = {str(chunk["name"]) for chunk in chunks}
+    expected_count = (
+        SINGLE_CHUNK_KEYWORD_COUNT
+        if len(chunks) == 1
+        else MULTI_CHUNK_KEYWORD_COUNT
+    )
+
+    seen_chunks: set[str] = set()
+    validated: list[LessonKeywordDebugResult] = []
+    for result in results:
+        chunk_name = result.chunk_name.strip()
+        if chunk_name not in chunk_names:
+            raise KeywordReviewInputError(f"Unknown chunk_name: {chunk_name}")
+        if chunk_name in seen_chunks:
+            raise KeywordReviewInputError(f"Duplicate keyword result for {chunk_name}.")
+        seen_chunks.add(chunk_name)
+
+        keywords = _normalize_keywords_strict(
+            [{"keyword_name": item.keyword_name} for item in result.keywords]
+        )
+        if result.keyword_count != len(keywords):
+            raise KeywordReviewInputError(
+                f"{chunk_name} keyword_count must equal len(keywords)."
+            )
+        if result.keyword_count != expected_count:
+            raise KeywordReviewInputError(
+                f"{chunk_name} must have exactly {expected_count} keywords."
+            )
+        validated.append(
+            LessonKeywordDebugResult(
+                chunk_name=chunk_name,
+                keyword_count=expected_count,
+                keywords=keywords,
+                keyword_path=str(get_chunk_keyword_path(job_id, lesson_name, chunk_name)),
+            )
+        )
+
+    if seen_chunks != chunk_names:
+        missing = sorted(chunk_names - seen_chunks)
+        raise KeywordReviewInputError(
+            f"Keyword results are missing chunks: {', '.join(missing)}."
+        )
+
+    return sorted(validated, key=lambda item: _chunk_sort_key(item.chunk_name))
+
+
+def _normalize_keywords_strict(raw_keywords: Any) -> list[dict[str, str]]:
+    if not isinstance(raw_keywords, list):
+        raise KeywordReviewInputError("keywords must be a list.")
+
+    keywords: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_keywords:
+        if not isinstance(item, dict):
+            raise KeywordReviewInputError("Each keyword must be an object.")
+        extra_keys = set(item) - {"keyword_name"}
+        if extra_keys:
+            raise KeywordReviewInputError(
+                f"Keyword contains unsupported fields: {', '.join(sorted(extra_keys))}."
+            )
+        raw_keyword = item.get("keyword_name")
+        if not isinstance(raw_keyword, str) or not raw_keyword.strip():
+            raise KeywordReviewInputError("keyword_name must not be empty.")
+
+        keyword = raw_keyword.strip()
+        key = normalize_for_compare(keyword)
+        if not key:
+            raise KeywordReviewInputError("keyword_name must not be empty.")
+        if key in seen:
+            raise KeywordReviewInputError(
+                f"Duplicate keyword_name in same chunk: {keyword}"
+            )
+        seen.add(key)
+        keywords.append({"keyword_name": keyword})
+
+    return keywords
 
 
 def _normalize_keywords(raw_keywords: Any) -> list[dict[str, str]]:
@@ -300,9 +527,23 @@ def _chunk_sort_key(chunk_name: str) -> tuple[int, str]:
     return (int(match.group(1)), chunk_name)
 
 
+def _required_int(payload: dict[str, Any], field: str) -> int:
+    value = payload.get(field)
+    if value is None or isinstance(value, bool):
+        raise KeywordReviewInputError(f"Required integer field is missing: {field}")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise KeywordReviewInputError(f"Required integer field is invalid: {field}") from exc
+
+
 __all__ = [
     "KeywordExtractionCountError",
     "KeywordDebugInputError",
+    "KeywordReviewInputError",
+    "approve_keywords_for_lesson",
     "extract_keywords_for_lesson_debug",
+    "get_keywords_for_lesson",
     "normalize_keyword_payload",
+    "update_keywords_for_lesson",
 ]
