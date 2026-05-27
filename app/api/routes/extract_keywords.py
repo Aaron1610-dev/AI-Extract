@@ -4,13 +4,16 @@ from fastapi import APIRouter, Body, HTTPException
 from pydantic import ValidationError
 
 from app.schemas.extraction import (
+    KeywordChunkExtractResponse,
     LessonKeywordApproveResponse,
     LessonKeywordListRequest,
     LessonKeywordReviewResponse,
 )
 from app.services.extraction.keyword_debug_service import (
+    KeywordExtractionCountError,
     KeywordReviewInputError,
     approve_keywords_for_lesson,
+    extract_keyword_for_chunk,
     get_keywords_for_lesson,
     update_keywords_for_lesson,
 )
@@ -20,6 +23,36 @@ router = APIRouter(
     prefix="/api/extract/jobs/{job_id}/keywords",
     tags=["extract-keywords"],
 )
+
+
+@router.post(
+    "/lesson/{lesson_name}/chunk/{chunk_name}/extract",
+    response_model=KeywordChunkExtractResponse,
+    response_model_exclude_none=True,
+)
+def extract_job_lesson_chunk_keyword(
+    job_id: str,
+    lesson_name: str,
+    chunk_name: str,
+) -> KeywordChunkExtractResponse:
+    try:
+        return extract_keyword_for_chunk(
+            job_id=job_id,
+            lesson_name=lesson_name,
+            chunk_name=chunk_name,
+        )
+
+    except KeywordExtractionCountError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to extract chunk keywords: {exc}",
+        ) from exc
 
 
 @router.get(

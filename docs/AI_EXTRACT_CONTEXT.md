@@ -430,7 +430,7 @@ Behavior:
 - `GET` trả review list với `status="reviewing_chunks"`.
 - `PUT` validate edited chunks, rewrite `chunk_*.json`, remove stale chunk JSON/PDF nếu count giảm, rebuild initial page-range PDFs, không gọi Kaggle và không extract keywords.
 - `approve` ghi `chunk/{lesson_name}/chunks_approved.json` với `status="approved_chunks"`.
-- `finalize` yêu cầu approved chunks, chạy Kaggle batch cutline, rebuild official PDFs, rồi extract keywords.
+- `finalize` yêu cầu approved chunks, chạy Kaggle batch cutline và rebuild official PDFs; keyword extraction chạy riêng theo từng chunk.
 - Không update `job.json` status.
 - Không tạo `chunk/chunks.json`.
 
@@ -516,11 +516,9 @@ Finalize chỉ xử lý một selected lesson, không xử lý toàn bộ lesson
 - Kaggle trả `cutline_results.json` và `bbox/{chunk_name}.png` cho nhiều chunk trong cùng một run.
 - Backend lưu lại từng kết quả vào `debug/{chunk_name}/cutline.json` và copy `debug/{chunk_name}/bbox.png` nếu có.
 - Nếu bất kỳ required cutline nào fail hoặc confidence không đủ, ghi summary `status=failed` và không rebuild official PDFs.
-- Nếu không có required cutline vì lesson chỉ có no-heading chunk, không gọi Kaggle, không build Kaggle package, rebuild `doc/chunk_01.pdf` là toàn bộ lesson PDF, rồi vẫn chạy keyword extraction.
+- Nếu không có required cutline vì lesson chỉ có no-heading chunk, không gọi Kaggle, không build Kaggle package, rebuild `doc/chunk_01.pdf` là toàn bộ lesson PDF.
 - Nếu tất cả required cutlines hợp lệ, build boundary map rồi rebuild toàn bộ `chunk/{lesson_name}/doc/chunk_*.pdf` trong một pass từ `lesson/doc/{lesson_name}.pdf`.
-- Sau khi official chunk PDFs rebuild thành công, endpoint tự gọi keyword extraction cho cùng lesson.
-- Nếu cutline fail thì không chạy keyword extraction.
-- Nếu keyword extraction fail sau khi cutline đã thành công, không rollback PDFs; response/summary dùng `status=completed_with_keyword_error`, `keyword_extracted=false`, và ghi `keyword_error`.
+- Finalize không chạy keyword extraction; keyword được xử lý bằng route riêng cho từng chunk.
 
 Output summary:
 
@@ -528,27 +526,32 @@ Output summary:
 workspace/outputs/{job_id}/chunk/{lesson_name}/debug/lesson_cutline_full.json
 ```
 
-Summary có `kaggle_mode="batch"`, `kaggle_request_id`, `kaggle_runs=1` khi có required cutlines, `processed_chunks`, `failed_chunks`, `cutline_boundaries`, `updated_pdfs`, `keyword_extracted`, và `keyword_paths`. Với no-heading lesson, summary có `kaggle_runs=0`, `processed_chunks=[]`, `skipped_chunks=[{"chunk_name": "chunk_01", "reason": "heading=null; no cutline needed"}]`, `updated_pdfs=["chunk_01.pdf"]`, và `keyword_extracted=true` nếu keyword extraction thành công.
+Summary có `kaggle_mode="batch"`, `kaggle_request_id`, `kaggle_runs=1` khi có required cutlines, `processed_chunks`, `failed_chunks`, `cutline_boundaries`, và `updated_pdfs`. Với no-heading lesson, summary có `kaggle_runs=0`, `processed_chunks=[]`, `skipped_chunks=[{"chunk_name": "chunk_01", "reason": "heading=null; no cutline needed"}]`, và `updated_pdfs=["chunk_01.pdf"]`.
 
 Full lesson rebuild không tạo thêm PDF folder, không tạo preview/backup folder, không sửa chunk JSON và không update job status. Với mỗi chunk, start boundary lấy từ cutline của chính chunk nếu có; end boundary lấy từ cutline của next chunk nếu next chunk start page nằm trong range hiện tại. PDF được ghi trực tiếp vào `chunk/{lesson_name}/doc/`.
 
-Keyword post-processing của `/chunks/lesson/{lesson_name}/finalize` dùng internal keyword extraction service:
+Keyword extraction chạy bằng route riêng cho một chunk:
+
+```text
+POST /api/extract/jobs/{job_id}/keywords/lesson/{lesson_name}/chunk/{chunk_name}/extract
+```
 
 - One-chunk lesson, bao gồm no-heading chunk: dùng `lesson/doc/{lesson_name}.pdf`, bắt buộc đúng 10 keywords, ghi `chunk/{lesson_name}/keyword/keyword_chunk_01.json`.
-- Multi-chunk lesson: dùng các finalized `chunk/{lesson_name}/doc/chunk_*.pdf`, bắt buộc đúng 5 keywords/chunk, ghi `chunk/{lesson_name}/keyword/keyword_chunk_*.json`.
-- Summary `lesson_cutline_full.json` có `keyword_extracted`, `keyword_paths`, và nếu lỗi thì có `keyword_error`.
+- Multi-chunk lesson: dùng finalized `chunk/{lesson_name}/doc/{chunk_name}.pdf`, bắt buộc đúng 5 keywords cho selected chunk, ghi `chunk/{lesson_name}/keyword/keyword_{chunk_name}.json`.
+- Chỉ overwrite keyword file của selected chunk sau khi exact-count extraction thành công; nếu lỗi thì giữ file cũ.
 
 ### Keyword review cho một lesson
 
 Public keyword routes:
 
 ```text
+POST /api/extract/jobs/{job_id}/keywords/lesson/{lesson_name}/chunk/{chunk_name}/extract
 GET  /api/extract/jobs/{job_id}/keywords/lesson/{lesson_name}
 PUT  /api/extract/jobs/{job_id}/keywords/lesson/{lesson_name}
 POST /api/extract/jobs/{job_id}/keywords/lesson/{lesson_name}/approve
 ```
 
-Keywords are generated internally after lesson chunk finalize succeeds. Public keyword APIs are review/edit/approve only; there is no standalone public keyword extraction route. Output remains file-based and is not imported into MongoDB/MinIO/PostgreSQL/Neo4j.
+Keywords are generated by `POST /keywords/lesson/{lesson_name}/chunk/{chunk_name}/extract`. Review/edit/approve APIs remain lesson-level. Output remains file-based and is not imported into MongoDB/MinIO/PostgreSQL/Neo4j.
 
 Input bắt buộc:
 
@@ -561,9 +564,9 @@ workspace/outputs/{job_id}/chunk/{lesson_name}/chunk_*.json
 Rule theo old thesis keyword extraction:
 
 - Nếu lesson chỉ có đúng 1 chunk: dùng full lesson PDF `lesson/doc/{lesson_name}.pdf` và bắt buộc đúng 10 keywords cho cả lesson.
-- Nếu lesson có nhiều chunk: dùng từng finalized chunk PDF trong `chunk/{lesson_name}/doc/chunk_*.pdf` và bắt buộc đúng 5 keywords cho mỗi chunk.
+- Nếu lesson có nhiều chunk: dùng finalized chunk PDF của selected chunk trong `chunk/{lesson_name}/doc/{chunk_name}.pdf` và bắt buộc đúng 5 keywords cho chunk đó.
 - Nếu Gemini trả ít hơn target, service retry tối đa 3 lần, mỗi lần yêu cầu bổ sung số keyword còn thiếu và không lặp keyword đã có.
-- Nếu sau retries vẫn thiếu keyword, finalize records keyword error and does not write incomplete keyword files for that run.
+- Nếu sau retries vẫn thiếu keyword, route trả lỗi rõ ràng và không ghi incomplete keyword file.
 
 Output folder:
 
@@ -662,10 +665,10 @@ Các script thử nghiệm OCR/pixel nên được xem là temporary hoặc chuy
 - Refactor cutline debug artifacts vào folder ổn định `chunk/{lesson_name}/debug/{chunk_name}/` gồm `page.png`, `bbox.png`, `cutline.json`, `cutline_promote.json`; rerun cùng chunk sẽ overwrite các file này.
 - Thêm finalize endpoint cho một selected lesson: `POST /api/extract/jobs/{job_id}/chunks/lesson/{lesson_name}/finalize`.
 - Full-lesson cutline sends all required boundary pages for one selected lesson to Kaggle in one batch run, fail thì không rebuild PDFs, success thì rebuild toàn bộ `chunk/{lesson_name}/doc/chunk_*.pdf` trong một pass từ `lesson/doc/{lesson_name}.pdf`; không xử lý all lessons và không batch toàn cục.
-- Full-lesson cutline success tự chạy keyword extraction cho cùng lesson sau khi PDFs đã rebuild; nếu keyword lỗi thì giữ PDFs đã cập nhật và trả `completed_with_keyword_error`.
+- Full-lesson cutline success chỉ rebuild official chunk PDFs; keyword extraction chạy riêng theo từng chunk.
 - Thêm keyword review routes cho một selected lesson: `GET|PUT /api/extract/jobs/{job_id}/keywords/lesson/{lesson_name}`.
 - Thêm keyword approve route: `POST /api/extract/jobs/{job_id}/keywords/lesson/{lesson_name}/approve`.
-- Keyword extraction giữ file-based review output trong `chunk/{lesson_name}/keyword/keyword_chunk_*.json`: một chunk dùng lesson PDF và bắt buộc 10 keywords, nhiều chunk dùng từng finalized chunk PDF và bắt buộc 5 keywords/chunk; retry tối đa 3 lần nếu Gemini trả thiếu, fail nếu vẫn thiếu; chưa thêm DB/object-storage/import logic.
+- Keyword extraction giữ file-based review output trong `chunk/{lesson_name}/keyword/keyword_chunk_*.json`: một chunk dùng lesson PDF và bắt buộc 10 keywords, nhiều chunk dùng selected finalized chunk PDF và bắt buộc 5 keywords/chunk; retry tối đa 3 lần nếu Gemini trả thiếu, fail nếu vẫn thiếu; chưa thêm DB/object-storage/import logic.
 - Cập nhật tài liệu cho workflow Topic/Lesson extraction hiện tại:
   - `front_matter.pdf` chỉ dùng làm Gemini input để lấy cấu trúc sách.
   - `original.pdf` là nguồn cắt final topic/lesson PDFs.

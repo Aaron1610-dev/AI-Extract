@@ -172,6 +172,16 @@ class LessonKeywordReviewResponse(BaseModel):
     lesson_name: str
     status: str
     results: list[LessonKeywordDebugResult]
+    missing_chunks: list[str] = Field(default_factory=list)
+
+
+class KeywordChunkExtractResponse(BaseModel):
+    job_id: str
+    lesson_name: str
+    chunk_name: str
+    keyword_count: int
+    keywords: list[KeywordItem]
+    keyword_path: str
 
 
 class LessonKeywordApproveResponse(BaseModel):
@@ -194,7 +204,3 @@ class LessonCutlineFullResponse(BaseModel):
     failed_chunks: list[dict[str, str]]
     updated_pdfs: list[str]
     debug_summary_path: str
-    keyword_extracted: bool = False
-    keyword_paths: list[str] = Field(default_factory=list)
-    keyword_results: list[LessonKeywordDebugResult] = Field(default_factory=list)
-    keyword_error: str | None = None

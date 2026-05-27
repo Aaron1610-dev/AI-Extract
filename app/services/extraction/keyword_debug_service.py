@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 from datetime import UTC, datetime
@@ -9,6 +10,7 @@ from app.pipeline.gemini_extract.prompts.keyword_prompt import (
     build_keyword_retry_prompt,
 )
 from app.schemas.extraction import (
+    KeywordChunkExtractResponse,
     LessonKeywordApproveResponse,
     LessonKeywordDebugResponse,
     LessonKeywordDebugResult,
@@ -18,6 +20,7 @@ from app.services.extraction.job_service import get_job
 from app.services.gemini.client import generate_with_pdf
 from app.services.storage.workspace_service import (
     get_chunk_doc_dir,
+    get_chunk_json_path,
     get_chunk_keyword_path,
     get_chunk_lesson_dir,
     get_chunk_lesson_keyword_dir,
@@ -33,6 +36,8 @@ from app.utils.json_utils import extract_json, normalize_for_compare
 SINGLE_CHUNK_KEYWORD_COUNT = 10
 MULTI_CHUNK_KEYWORD_COUNT = 5
 MAX_KEYWORD_RETRIES = 3
+
+logger = logging.getLogger(__name__)
 
 
 class KeywordDebugInputError(ValueError):
@@ -134,13 +139,88 @@ def get_keywords_for_lesson(
     lesson_name: str,
 ) -> LessonKeywordReviewResponse:
     get_job(job_id)
+    _get_approved_lesson(job_id=job_id, lesson_name=lesson_name)
+    chunks = _load_lesson_chunks(job_id=job_id, lesson_name=lesson_name)
     results = _read_keyword_results(job_id=job_id, lesson_name=lesson_name)
+    result_chunks = {result.chunk_name for result in results}
+    missing_chunks = [
+        str(chunk["name"])
+        for chunk in chunks
+        if str(chunk["name"]) not in result_chunks
+    ]
     approved_path = get_keywords_approved_json_path(job_id, lesson_name)
     return LessonKeywordReviewResponse(
         job_id=job_id,
         lesson_name=lesson_name,
-        status="approved_keywords" if approved_path.exists() else "reviewing_keywords",
+        status=(
+            "approved_keywords"
+            if approved_path.exists() and not missing_chunks
+            else "reviewing_keywords"
+        ),
         results=results,
+        missing_chunks=missing_chunks,
+    )
+
+
+def extract_keyword_for_chunk(
+    job_id: str,
+    lesson_name: str,
+    chunk_name: str,
+    *,
+    model: str | None = None,
+) -> KeywordChunkExtractResponse:
+    get_job(job_id)
+
+    lesson = _get_approved_lesson(job_id=job_id, lesson_name=lesson_name)
+    chunk_path = get_chunk_json_path(job_id, lesson_name, chunk_name)
+    if not chunk_path.exists():
+        raise FileNotFoundError(f"Chunk JSON was not found: {chunk_path}")
+
+    chunks = _load_lesson_chunks(job_id=job_id, lesson_name=lesson_name)
+    selected_chunk = next(
+        (chunk for chunk in chunks if str(chunk.get("name")) == chunk_name),
+        None,
+    )
+    if selected_chunk is None:
+        raise FileNotFoundError(f"Chunk '{chunk_name}' was not found in lesson: {lesson_name}")
+
+    if len(chunks) == 1:
+        source_type = "lesson"
+        source_title = _source_title(lesson)
+        source_pdf = get_lesson_doc_path(job_id, lesson_name)
+        keyword_count = SINGLE_CHUNK_KEYWORD_COUNT
+    else:
+        source_type = "chunk"
+        source_title = _source_title(selected_chunk)
+        source_pdf = get_chunk_doc_dir(job_id, lesson_name) / f"{chunk_name}.pdf"
+        keyword_count = MULTI_CHUNK_KEYWORD_COUNT
+
+    if not source_pdf.exists():
+        raise FileNotFoundError(f"Keyword source PDF was not found: {source_pdf}")
+
+    normalized = _extract_source_keywords(
+        source_type=source_type,
+        chunk_name=chunk_name,
+        source_title=source_title,
+        source_pdf=source_pdf,
+        keyword_count=keyword_count,
+        model=model,
+    )
+    if normalized["keyword_count"] != len(normalized["keywords"]):
+        raise KeywordExtractionCountError(
+            f"Keyword extraction failed: keyword_count does not equal len(keywords) for {chunk_name}."
+        )
+
+    keyword_path = get_chunk_keyword_path(job_id, lesson_name, chunk_name)
+    _write_keyword_json_atomic(keyword_path, normalized)
+
+    return KeywordChunkExtractResponse(
+        job_id=job_id,
+        lesson_name=lesson_name,
+        chunk_name=chunk_name,
+        keyword_count=int(normalized["keyword_count"]),
+        keywords=normalized["keywords"],
+        keyword_path=str(keyword_path),
     )
 
 
@@ -242,7 +322,17 @@ def _extract_source_keywords(
         model=model,
     )
     parsed = extract_json(raw_response_text)
-    keywords = _normalize_keywords(parsed.get("keywords") if isinstance(parsed, dict) else [])
+    raw_keywords = parsed.get("keywords") if isinstance(parsed, dict) else []
+    keywords, debug = _normalize_keywords_with_debug(raw_keywords)
+    _log_keyword_normalization_debug(
+        chunk_name=chunk_name,
+        stage="initial",
+        attempt=1,
+        retry_attempt=0,
+        raw_count=debug["raw_count"],
+        normalized_count=len(keywords),
+        removed=debug["removed"],
+    )
     if len(keywords) >= keyword_count:
         keywords = keywords[:keyword_count]
         return {
@@ -251,7 +341,7 @@ def _extract_source_keywords(
             "keywords": keywords,
         }
 
-    for _attempt in range(MAX_KEYWORD_RETRIES):
+    for retry_attempt in range(1, MAX_KEYWORD_RETRIES + 1):
         if len(keywords) == keyword_count:
             break
 
@@ -267,12 +357,37 @@ def _extract_source_keywords(
             model=model,
         )
         retry_parsed = extract_json(retry_response_text)
-        retry_keywords = _normalize_keywords(
-            retry_parsed.get("keywords") if isinstance(retry_parsed, dict) else []
+        retry_raw_keywords = retry_parsed.get("keywords") if isinstance(retry_parsed, dict) else []
+        retry_keywords, retry_debug = _normalize_keywords_with_debug(retry_raw_keywords)
+        _log_keyword_normalization_debug(
+            chunk_name=chunk_name,
+            stage="completion",
+            attempt=retry_attempt + 1,
+            retry_attempt=retry_attempt,
+            raw_count=retry_debug["raw_count"],
+            normalized_count=len(retry_keywords),
+            removed=retry_debug["removed"],
         )
+        before_merge_count = len(keywords)
         keywords = _merge_keywords(keywords, retry_keywords, keyword_count)
+        logger.info(
+            "Keyword extraction merge: chunk=%s retry_attempt=%s before=%s completion_normalized=%s after=%s target=%s",
+            chunk_name,
+            retry_attempt,
+            before_merge_count,
+            len(retry_keywords),
+            len(keywords),
+            keyword_count,
+        )
 
     if len(keywords) != keyword_count:
+        logger.error(
+            "Keyword extraction failed count check: chunk=%s target=%s normalized_count=%s retries=%s",
+            chunk_name,
+            keyword_count,
+            len(keywords),
+            MAX_KEYWORD_RETRIES,
+        )
         raise KeywordExtractionCountError(
             f"Keyword extraction failed: expected exactly {keyword_count} keywords for {chunk_name}, "
             f"got {len(keywords)} after retries."
@@ -311,9 +426,7 @@ def _read_keyword_results(
 ) -> list[LessonKeywordDebugResult]:
     keyword_dir = get_chunk_lesson_keyword_dir(job_id, lesson_name)
     if not keyword_dir.exists():
-        raise FileNotFoundError(
-            "Keywords have not been generated yet. Run lesson finalize first."
-        )
+        return []
 
     results: list[LessonKeywordDebugResult] = []
     for path in sorted(keyword_dir.glob("keyword_chunk_*.json"), key=lambda item: _chunk_sort_key(item.stem.replace("keyword_", ""))):
@@ -329,12 +442,20 @@ def _read_keyword_results(
             )
         )
 
-    if not results:
-        raise FileNotFoundError(
-            "Keywords have not been generated yet. Run lesson finalize first."
-        )
-
     return results
+
+
+def _write_keyword_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.stem}.tmp{path.suffix}")
+    if temp_path.exists():
+        temp_path.unlink()
+    try:
+        write_json(temp_path, payload)
+        temp_path.replace(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 def _validate_keyword_results(
@@ -428,11 +549,25 @@ def _normalize_keywords_strict(raw_keywords: Any) -> list[dict[str, str]]:
 
 
 def _normalize_keywords(raw_keywords: Any) -> list[dict[str, str]]:
+    keywords, _debug = _normalize_keywords_with_debug(raw_keywords)
+    return keywords
+
+
+def _normalize_keywords_with_debug(raw_keywords: Any) -> tuple[list[dict[str, str]], dict[str, Any]]:
     if not isinstance(raw_keywords, list):
-        return []
+        return [], {
+            "raw_count": 0,
+            "removed": [
+                {
+                    "keyword": f"<{type(raw_keywords).__name__}>",
+                    "reason": "invalid shape",
+                }
+            ],
+        }
 
     keywords: list[dict[str, str]] = []
     seen: set[str] = set()
+    removed: list[dict[str, str]] = []
     for item in raw_keywords:
         keyword: str | None = None
 
@@ -440,20 +575,34 @@ def _normalize_keywords(raw_keywords: Any) -> list[dict[str, str]]:
             raw_keyword = item.get("keyword_name") or item.get("keyword")
             if isinstance(raw_keyword, str):
                 keyword = raw_keyword.strip()
+            else:
+                removed.append({"keyword": repr(item), "reason": "invalid shape"})
+                continue
         elif isinstance(item, str):
             keyword = item.strip()
-
-        if not keyword:
+        else:
+            removed.append({"keyword": repr(item), "reason": "invalid shape"})
             continue
 
-        key = normalize_for_compare(keyword)
-        if not key or key in seen:
+        if not keyword:
+            removed.append({"keyword": repr(item), "reason": "empty"})
+            continue
+
+        key = _keyword_exact_key(keyword)
+        if not key:
+            removed.append({"keyword": keyword, "reason": "empty"})
+            continue
+        if key in seen:
+            removed.append({"keyword": keyword, "reason": "duplicate"})
             continue
 
         seen.add(key)
         keywords.append({"keyword_name": keyword})
 
-    return keywords
+    return keywords, {
+        "raw_count": len(raw_keywords),
+        "removed": removed,
+    }
 
 
 def _merge_keywords(
@@ -466,7 +615,7 @@ def _merge_keywords(
 
     for item in [*existing_keywords, *new_keywords]:
         keyword = item.get("keyword_name", "").strip()
-        key = normalize_for_compare(keyword)
+        key = _keyword_exact_key(keyword)
         if not keyword or not key or key in seen:
             continue
         seen.add(key)
@@ -475,6 +624,43 @@ def _merge_keywords(
             break
 
     return merged
+
+
+def _keyword_exact_key(keyword: str) -> str:
+    return " ".join(keyword.strip().casefold().split())
+
+
+def _log_keyword_normalization_debug(
+    *,
+    chunk_name: str,
+    stage: str,
+    attempt: int,
+    retry_attempt: int,
+    raw_count: int,
+    normalized_count: int,
+    removed: list[dict[str, str]],
+) -> None:
+    reason_counts: dict[str, int] = {
+        "empty": 0,
+        "duplicate": 0,
+        "invalid shape": 0,
+        "too long": 0,
+    }
+    for item in removed:
+        reason = item.get("reason", "invalid shape")
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+    logger.info(
+        "Keyword extraction normalization: chunk=%s stage=%s attempt=%s retry_attempt=%s raw_count=%s normalized_count=%s removed_counts=%s removed=%s",
+        chunk_name,
+        stage,
+        attempt,
+        retry_attempt,
+        raw_count,
+        normalized_count,
+        reason_counts,
+        removed,
+    )
 
 
 def _get_approved_lesson(*, job_id: str, lesson_name: str) -> dict[str, Any]:
@@ -543,6 +729,7 @@ __all__ = [
     "KeywordReviewInputError",
     "approve_keywords_for_lesson",
     "extract_keywords_for_lesson_debug",
+    "extract_keyword_for_chunk",
     "get_keywords_for_lesson",
     "normalize_keyword_payload",
     "update_keywords_for_lesson",
